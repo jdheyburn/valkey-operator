@@ -28,6 +28,7 @@ This document describes the CRD architecture for the Valkey Kubernetes Operator,
 | `ValkeyCluster` | Cluster mode with shards and replicas per shard. Built-in slot management, rebalancing, and cluster discovery. |
 | `Valkey` | Standalone and Replication modes. `replicas=0` is standalone, `replicas>0` enables replication. Seamless scaling from standalone to replication. |
 | `ValkeySentinel` | Selector-based monitoring of `Valkey` instances. Provides quorum-based failover for replicated Valkey deployments. |
+| `ValkeyPool` | Horizontal scaling via client-side sharding. Creates multiple `Valkey` instances with AZ-aware primary placement. Optionally embeds Sentinel. |
 
 ### Internal CRD
 
@@ -146,6 +147,74 @@ spec:
 - Configures Sentinel to monitor each as a master group
 - Handles failover when a primary becomes unavailable
 - One `ValkeySentinel` can monitor multiple `Valkey` instances
+
+### ValkeyPool
+
+For horizontal scaling via client-side sharding. Creates multiple Sentinel-managed `Valkey` instances with AZ-aware primary placement.
+
+```yaml
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyPool
+metadata:
+  name: cache
+spec:
+  shards: 4                      # Creates cache-0, cache-1, cache-2, cache-3
+  replicasPerShard: 2            # Each shard: 1 primary + 2 replicas
+
+  # AZ distribution for primaries (round-robin, continues on scale-up)
+  availabilityZones:
+    - us-east-1a
+    - us-east-1b
+    - us-east-1c
+
+  # Optional embedded Sentinel (disabled by default)
+  sentinel:
+    enabled: false               # Set to true to create Sentinel for this pool
+    replicas: 3
+    image: valkey/valkey:8.0
+    resources: {...}
+
+  # Template applied to each Valkey shard
+  template:
+    metadata:
+      labels:
+        pool: cache
+        tier: critical
+    spec:
+      image: valkey/valkey:8.0
+      resources: {...}
+      persistence: {...}
+      auth: {...}
+      tls: {...}
+      config: {...}
+```
+
+**Resource hierarchy:**
+
+```
+ValkeyPool (cache)
+├── Valkey (cache-0)
+│   ├── ValkeyNode (cache-0-primary)
+│   ├── ValkeyNode (cache-0-replica-0)
+│   └── ValkeyNode (cache-0-replica-1)
+├── Valkey (cache-1)
+│   └── ...
+├── Valkey (cache-2)
+│   └── ...
+├── Valkey (cache-3)
+│   └── ...
+└── ValkeySentinel (cache-sentinel)  # if sentinel.enabled: true
+```
+
+**Behaviors:**
+- Creates `Valkey` resources named `{pool-name}-{shard-index}` (e.g., cache-0, cache-1, ...)
+- Primaries pinned to AZs in round-robin order based on `availabilityZones`
+- Scaling up (`shards: 4` → `shards: 6`) adds new shards, continues AZ round-robin pattern
+- Data rebalancing is the client's responsibility (client-side sharding)
+- If `sentinel.enabled: true`, creates embedded `ValkeySentinel` monitoring all shards in pool
+- If `sentinel.enabled: false`, user can deploy external `ValkeySentinel` using label selectors
+
+**Use case:** Companies running Valkey for different workflows (cache, locks, sidekiq) who need to horizontally scale each workflow independently with AZ-aware placement for cost optimization.
 
 ---
 
@@ -491,6 +560,66 @@ spec:
       tier: critical
 ```
 
+### ValkeyPool (Horizontal Scaling with Client-Side Sharding)
+
+```yaml
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyPool
+metadata:
+  name: cache
+spec:
+  shards: 4
+  replicasPerShard: 2
+
+  availabilityZones:
+    - us-east-1a
+    - us-east-1b
+    - us-east-1c
+
+  sentinel:
+    enabled: true
+    replicas: 3
+
+  template:
+    metadata:
+      labels:
+        pool: cache
+        tier: critical
+    spec:
+      image: valkey/valkey:8.0
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: 1
+          memory: 2Gi
+
+      persistence:
+        rdb:
+          enabled: true
+        volume:
+          enabled: true
+          size: 10Gi
+          storageClassName: fast-ssd
+
+      auth:
+        password:
+          secret:
+            name: cache-password
+            key: password
+
+      config:
+        maxmemory: 1500mb
+        maxmemory-policy: allkeys-lru
+```
+
+This creates:
+- 4 Valkey shards: `cache-0`, `cache-1`, `cache-2`, `cache-3`
+- Each shard with 1 primary + 2 replicas
+- Primaries in AZs: cache-0→us-east-1a, cache-1→us-east-1b, cache-2→us-east-1c, cache-3→us-east-1a
+- 1 Sentinel deployment (`cache-sentinel`) monitoring all 4 shards
+
 ---
 
 ## Open Items and TODOs
@@ -508,10 +637,12 @@ spec:
 
 | Term | Definition |
 |------|------------|
-| Shard | A primary + its replicas, responsible for a subset of hash slots (ValkeyCluster only) |
+| Shard (ValkeyCluster) | A primary + its replicas, responsible for a subset of hash slots. Server-side sharding with automatic slot management. |
+| Shard (ValkeyPool) | An independent Valkey instance (primary + replicas) in a pool. Client-side sharding where the application determines which shard to use. |
 | Primary | The writable node in a shard or replication group |
 | Replica | A read-only copy of a primary |
 | Node | A single Valkey instance (represented by ValkeyNode internally) |
+| Pool | A collection of shards for horizontal scaling via client-side sharding (ValkeyPool) |
 
 ---
 
