@@ -26,8 +26,8 @@ This document describes the CRD architecture for the Valkey Kubernetes Operator,
 | CRD | Purpose |
 |-----|---------|
 | `ValkeyCluster` | Cluster mode with shards and replicas per shard. Built-in slot management, rebalancing, and cluster discovery. |
-| `Valkey` | Standalone and Replication modes. `replicas=0` is standalone, `replicas>0` enables replication. Seamless scaling from standalone to replication. |
-| `ValkeySentinel` | Selector-based monitoring of `Valkey` instances. Provides quorum-based failover for replicated Valkey deployments. |
+| `Valkey` | Standalone and Replication modes. `replicas=0` is standalone, `replicas>0` enables replication. Supports failover modes: none, operator-managed, or sentinel-managed. |
+| `ValkeySentinel` | Sentinel infrastructure (pods). Valkey instances explicitly reference which Sentinel monitors them via `spec.failover.sentinel.ref`. |
 | `ValkeyPool` | Horizontal scaling via client-side sharding. Creates multiple `Valkey` instances with AZ-aware primary placement. Optionally embeds Sentinel. |
 
 ### Internal CRD
@@ -124,91 +124,96 @@ spec:
 
 ### ValkeySentinel
 
-```yaml
-apiVersion: valkey.io/v1alpha1
-kind: ValkeySentinel
-metadata:
-  name: my-sentinel
-spec:
-  replicas: 3            # Sentinel quorum size (odd number recommended)
-
-  # Selector for which Valkey instances to monitor
-  selector:
-    matchLabels:
-      tier: critical
-      environment: production
-
-  image: valkey/valkey:8.0
-  resources: {...}
-```
-
-**Sentinel behavior:**
-- Discovers `Valkey` resources matching the selector
-- Configures Sentinel to monitor each as a master group
-- Handles failover when a primary becomes unavailable
-- One `ValkeySentinel` can monitor multiple `Valkey` instances
-
-#### Sentinel Configuration Options
-
-Sentinel settings (quorum, downAfterMilliseconds, failoverTimeout, parallelSyncs) are **per-monitored-master**, not global. Two design options are under consideration:
-
-**Option A: Config on Valkey CRD with ValkeySentinel defaults**
-
-Valkey instances specify their own sentinel config. ValkeySentinel provides org-wide defaults.
+`ValkeySentinel` is purely infrastructure - the Sentinel deployment. It has no selector; Valkey instances explicitly reference which Sentinel monitors them.
 
 ```yaml
-# ValkeySentinel with defaults
-apiVersion: valkey.io/v1alpha1
-kind: ValkeySentinel
-metadata:
-  name: sentinel
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      tier: critical
-  defaults:
-    quorum: 2
-    downAfterMilliseconds: 30000
-    failoverTimeout: 180000
-    parallelSyncs: 1
----
-# Valkey overrides specific settings
-apiVersion: valkey.io/v1alpha1
-kind: Valkey
-metadata:
-  name: latency-sensitive
-  labels:
-    tier: critical
-spec:
-  replicas: 2
-  sentinel:
-    downAfterMilliseconds: 5000    # Override - fail faster
-```
-
-Merge order: Operator defaults → ValkeySentinel defaults → Valkey spec.sentinel
-
-*Pros:* Self-describing resources, simple mental model
-*Cons:* Valkey has sentinel-specific config even if not monitored
-
-**Option B: SentinelMonitor CRD (ServiceMonitor pattern)**
-
-Separate CRD binds Valkey instances to a Sentinel with specific config. Follows prometheus-operator pattern exactly.
-
-```yaml
-# ValkeySentinel - just infrastructure
 apiVersion: valkey.io/v1alpha1
 kind: ValkeySentinel
 metadata:
   name: shared-sentinel
 spec:
-  replicas: 3
----
-# SentinelMonitor - binding + config
+  replicas: 3            # Sentinel quorum size (odd number recommended)
+  image: valkey/valkey:8.0
+  resources: {...}
+```
+
+**Sentinel behavior:**
+- Provides Sentinel pods for failover management
+- Valkey instances reference this Sentinel via `spec.failover.sentinel.ref`
+- One `ValkeySentinel` can be referenced by multiple `Valkey` instances
+- Sentinel config is per-Valkey (on the Valkey resource), not on ValkeySentinel
+
+### Failover Configuration
+
+Valkey has a unified `failover` block that explicitly declares its failover strategy:
+
+```yaml
 apiVersion: valkey.io/v1alpha1
-kind: SentinelMonitor
+kind: Valkey
 metadata:
-  name: critical-monitoring
+  name: my-valkey
+spec:
+  replicas: 2
+
+  failover:
+    mode: none|operator|sentinel
+
+    # Operator-managed failover config (when mode: operator)
+    operator:
+      detectionInterval: 5s       # How often to check primary health
+      failoverTimeout: 30s        # Time before triggering failover
+
+    # Sentinel-managed failover config (when mode: sentinel)
+    sentinel:
+      ref:
+        name: shared-sentinel     # Which ValkeySentinel monitors this
+      config:
+        quorum: 2
+        downAfterMilliseconds: 30000
+        failoverTimeout: 180000
+        parallelSyncs: 1
+```
+
+**Failover modes:**
+
+| Mode | Behavior |
+|------|----------|
+| `none` | No automatic failover. Operator reports status only. Safe default. |
+| `operator` | Operator monitors primary health, promotes replica on failure using `FAILOVER` command. Lightweight, no Sentinel needed. |
+| `sentinel` | Sentinel-managed failover. Valkey explicitly references which `ValkeySentinel` monitors it. Production-grade HA. |
+
+**Benefits of this design:**
+- Self-describing: look at Valkey, see complete failover strategy
+- No ambiguity about "who's in charge" of failover
+- No cross-resource validation needed
+- Single source of truth for failover config
+
+#### Rejected Alternatives
+
+**Alternative A: ValkeySentinel with selector discovery**
+
+ValkeySentinel would use label selectors to discover which Valkey instances to monitor (like ServiceMonitor selects Services).
+
+```yaml
+# REJECTED DESIGN
+kind: ValkeySentinel
+spec:
+  selector:
+    matchLabels:
+      tier: critical
+  defaults:
+    downAfterMilliseconds: 30000
+```
+
+*Rejected because:* Creates ambiguity when Valkey also has `failover.mode: operator`. Cross-resource validation needed to prevent conflicts. Valkey doesn't know if it's being monitored.
+
+**Alternative B: SentinelMonitor CRD (ServiceMonitor pattern)**
+
+Separate CRD to bind Valkey instances to a Sentinel with config, following prometheus-operator pattern exactly.
+
+```yaml
+# REJECTED DESIGN
+kind: SentinelMonitor
 spec:
   sentinelRef:
     name: shared-sentinel
@@ -216,34 +221,14 @@ spec:
     matchLabels:
       tier: critical
   config:
-    quorum: 2
     downAfterMilliseconds: 10000
-    failoverTimeout: 60000
-    parallelSyncs: 2
----
-# Different config for different Valkey instances, same Sentinel
-apiVersion: valkey.io/v1alpha1
-kind: SentinelMonitor
-metadata:
-  name: background-monitoring
-spec:
-  sentinelRef:
-    name: shared-sentinel
-  valkeySelector:
-    matchLabels:
-      tier: background
-  config:
-    downAfterMilliseconds: 60000
 ```
 
-*Pros:* Clean separation of concerns, proven Kubernetes pattern, Valkey stays clean
-*Cons:* Additional CRD, more verbose for simple cases
-
-**Decision:** TBD - both options are valid, choice depends on user preference for simplicity vs flexibility
+*Rejected because:* Same ambiguity issues as Alternative A. Additional CRD adds complexity. The selector pattern conflicts with having operator-managed failover as an option on Valkey.
 
 ### ValkeyPool
 
-For horizontal scaling via client-side sharding. Creates multiple Sentinel-managed `Valkey` instances with AZ-aware primary placement.
+For horizontal scaling via client-side sharding. Creates multiple `Valkey` instances with AZ-aware primary placement.
 
 ```yaml
 apiVersion: valkey.io/v1alpha1
@@ -260,7 +245,8 @@ spec:
     - us-east-1b
     - us-east-1c
 
-  # Optional embedded Sentinel (disabled by default)
+  # Optional embedded Sentinel for this pool (disabled by default)
+  # If enabled, creates ValkeySentinel and configures all shards to use it
   sentinel:
     enabled: false               # Set to true to create Sentinel for this pool
     replicas: 3
@@ -280,6 +266,19 @@ spec:
       auth: {...}
       tls: {...}
       config: {...}
+
+      # Failover config for all shards in this pool
+      failover:
+        mode: none|operator|sentinel
+        operator: {...}
+        sentinel:
+          # If pool.sentinel.enabled: true, ref is auto-populated
+          # If pool.sentinel.enabled: false, user can reference external Sentinel
+          ref:
+            name: external-sentinel
+          config:
+            quorum: 2
+            downAfterMilliseconds: 30000
 ```
 
 **Resource hierarchy:**
@@ -605,15 +604,13 @@ spec:
     enabled: true
 ```
 
-### Valkey (Simple Replicated)
+### Valkey (Replicated with Operator-Managed Failover)
 
 ```yaml
 apiVersion: valkey.io/v1alpha1
 kind: Valkey
 metadata:
   name: session-store
-  labels:
-    tier: critical
 spec:
   image: valkey/valkey:8.0
   replicas: 2
@@ -635,22 +632,63 @@ spec:
       secret:
         name: session-store-password
         key: password
+
+  # Lightweight HA without Sentinel
+  failover:
+    mode: operator
+    operator:
+      detectionInterval: 5s
+      failoverTimeout: 30s
 ```
 
-### ValkeySentinel
+### Valkey (Replicated with Sentinel-Managed Failover)
 
 ```yaml
 apiVersion: valkey.io/v1alpha1
 kind: ValkeySentinel
 metadata:
-  name: sentinel
+  name: shared-sentinel
 spec:
   replicas: 3
   image: valkey/valkey:8.0
+---
+apiVersion: valkey.io/v1alpha1
+kind: Valkey
+metadata:
+  name: critical-cache
+spec:
+  image: valkey/valkey:8.0
+  replicas: 2
 
-  selector:
-    matchLabels:
-      tier: critical
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  persistence:
+    rdb:
+      enabled: true
+    volume:
+      enabled: true
+      size: 10Gi
+
+  auth:
+    password:
+      secret:
+        name: critical-cache-password
+        key: password
+
+  # Production-grade HA with Sentinel
+  failover:
+    mode: sentinel
+    sentinel:
+      ref:
+        name: shared-sentinel
+      config:
+        quorum: 2
+        downAfterMilliseconds: 10000
+        failoverTimeout: 60000
+        parallelSyncs: 1
 ```
 
 ### ValkeyPool (Horizontal Scaling with Client-Side Sharding)
@@ -669,6 +707,7 @@ spec:
     - us-east-1b
     - us-east-1c
 
+  # Embedded Sentinel for this pool
   sentinel:
     enabled: true
     replicas: 3
@@ -705,13 +744,22 @@ spec:
       config:
         maxmemory: 1500mb
         maxmemory-policy: allkeys-lru
+
+      # Failover config - ref auto-populated when pool.sentinel.enabled: true
+      failover:
+        mode: sentinel
+        sentinel:
+          config:
+            quorum: 2
+            downAfterMilliseconds: 30000
+            failoverTimeout: 180000
 ```
 
 This creates:
 - 4 Valkey shards: `cache-0`, `cache-1`, `cache-2`, `cache-3`
 - Each shard with 1 primary + 2 replicas
 - Primaries in AZs: cache-0→us-east-1a, cache-1→us-east-1b, cache-2→us-east-1c, cache-3→us-east-1a
-- 1 Sentinel deployment (`cache-sentinel`) monitoring all 4 shards
+- 1 ValkeySentinel (`cache-sentinel`) - auto-created and referenced by all shards
 
 ---
 
