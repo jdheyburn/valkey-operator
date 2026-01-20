@@ -148,6 +148,99 @@ spec:
 - Handles failover when a primary becomes unavailable
 - One `ValkeySentinel` can monitor multiple `Valkey` instances
 
+#### Sentinel Configuration Options
+
+Sentinel settings (quorum, downAfterMilliseconds, failoverTimeout, parallelSyncs) are **per-monitored-master**, not global. Two design options are under consideration:
+
+**Option A: Config on Valkey CRD with ValkeySentinel defaults**
+
+Valkey instances specify their own sentinel config. ValkeySentinel provides org-wide defaults.
+
+```yaml
+# ValkeySentinel with defaults
+apiVersion: valkey.io/v1alpha1
+kind: ValkeySentinel
+metadata:
+  name: sentinel
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      tier: critical
+  defaults:
+    quorum: 2
+    downAfterMilliseconds: 30000
+    failoverTimeout: 180000
+    parallelSyncs: 1
+---
+# Valkey overrides specific settings
+apiVersion: valkey.io/v1alpha1
+kind: Valkey
+metadata:
+  name: latency-sensitive
+  labels:
+    tier: critical
+spec:
+  replicas: 2
+  sentinel:
+    downAfterMilliseconds: 5000    # Override - fail faster
+```
+
+Merge order: Operator defaults → ValkeySentinel defaults → Valkey spec.sentinel
+
+*Pros:* Self-describing resources, simple mental model
+*Cons:* Valkey has sentinel-specific config even if not monitored
+
+**Option B: SentinelMonitor CRD (ServiceMonitor pattern)**
+
+Separate CRD binds Valkey instances to a Sentinel with specific config. Follows prometheus-operator pattern exactly.
+
+```yaml
+# ValkeySentinel - just infrastructure
+apiVersion: valkey.io/v1alpha1
+kind: ValkeySentinel
+metadata:
+  name: shared-sentinel
+spec:
+  replicas: 3
+---
+# SentinelMonitor - binding + config
+apiVersion: valkey.io/v1alpha1
+kind: SentinelMonitor
+metadata:
+  name: critical-monitoring
+spec:
+  sentinelRef:
+    name: shared-sentinel
+  valkeySelector:
+    matchLabels:
+      tier: critical
+  config:
+    quorum: 2
+    downAfterMilliseconds: 10000
+    failoverTimeout: 60000
+    parallelSyncs: 2
+---
+# Different config for different Valkey instances, same Sentinel
+apiVersion: valkey.io/v1alpha1
+kind: SentinelMonitor
+metadata:
+  name: background-monitoring
+spec:
+  sentinelRef:
+    name: shared-sentinel
+  valkeySelector:
+    matchLabels:
+      tier: background
+  config:
+    downAfterMilliseconds: 60000
+```
+
+*Pros:* Clean separation of concerns, proven Kubernetes pattern, Valkey stays clean
+*Cons:* Additional CRD, more verbose for simple cases
+
+**Decision:** TBD - both options are valid, choice depends on user preference for simplicity vs flexibility
+
 ### ValkeyPool
 
 For horizontal scaling via client-side sharding. Creates multiple Sentinel-managed `Valkey` instances with AZ-aware primary placement.
