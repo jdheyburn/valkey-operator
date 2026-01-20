@@ -771,6 +771,11 @@ This creates:
 | External config reference | Started with inline `config` only. Add `configRef` (Secret reference) if users need shared/external configuration. |
 | Ingress/LoadBalancer | RFC mentions option for external access. Not yet designed. |
 | Backup/Restore | RFC mentions this. Not yet designed. |
+| Replica priority | Control Sentinel promotion order via `replica-priority`. Need to decide: flat list for all nodes, structured (primary + replicas), or replicas-only. Use cases: AZ-aware failover, tiered replicas, never-promote (priority 0). |
+| Pod Disruption Budgets | MaxUnavailable per shard for safe node drains. Not yet designed. |
+| T-shirt sizes | Predefined resource/config profiles (small, medium, large). Not yet designed. |
+| Failover CRD | Explicit trigger for controlled failovers (e.g., pre-maintenance). Not yet designed. |
+| Status fields | Track `currentMaster`, shard health, replica status. Not yet designed. |
 
 ---
 
