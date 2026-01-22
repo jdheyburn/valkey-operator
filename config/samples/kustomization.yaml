@@ -1,4 +1,44 @@
-## Append samples of your project ##
+# Kustomization for Valkey Operator Samples
+#
+# Apply all samples:
+#   kubectl apply -k config/samples/
+#
+# Apply specific sample:
+#   kubectl apply -f config/samples/valkey_standalone.yaml
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace for all samples
+namespace: default
+
 resources:
-- v1alpha1_valkeycluster.yaml
+  # Note: Uncomment the examples you want to deploy
+  # WARNING: Do not apply all examples at once - they are for demonstration
+
+  # Basic examples (choose one)
+  # - valkey_standalone.yaml          # 1 pod
+  # - valkey_replicated.yaml          # 3 pods
+  # - valkey_with_sentinel.yaml       # 8 pods (5 Valkey + 3 Sentinel)
+
+  # Horizontal scaling examples
+  # - valkeypool_basic.yaml           # 15 pods (5 shards × 3)
+  # - valkeypool_with_az.yaml         # 32 pods (9 shards × 3 + 5 Sentinel)
+
+  # Cluster examples
+  # - valkeycluster_basic.yaml        # 9 pods (3 shards × 3)
+  # - valkeycluster_with_az.yaml      # 15 pods (5 shards × 3)
+
+  # Advanced examples
+  # - sentinel_shared.yaml            # 13 pods (3 Sentinel + 3 Valkey instances)
+  # - production_complete.yaml        # 53 pods (complete production setup)
+
+  # Legacy example (for reference)
+  - v1alpha1_valkeycluster.yaml
+
 # +kubebuilder:scaffold:manifestskustomizesamples
+
+# Labels applied to all resources
+commonLabels:
+  app.kubernetes.io/part-of: valkey-operator
+  app.kubernetes.io/managed-by: kustomize

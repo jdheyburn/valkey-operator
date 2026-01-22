@@ -1,0 +1,41 @@
+# Example: Standalone Valkey Instance
+# Use case: Development, testing, simple cache
+# Total pods: 1
+---
+apiVersion: valkey.io/v1alpha1
+kind: Valkey
+metadata:
+  name: dev-cache
+  namespace: default
+spec:
+  # Single pod, no replication
+  replicas: 1
+
+  # Valkey image
+  image: valkey/valkey:8.0
+
+  # Resource limits for development
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  # Persistence for development (optional)
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: standard
+
+  # Metrics exporter enabled
+  exporter:
+    enabled: true
+    image: oliver006/redis_exporter:latest
+
+  # Valkey configuration
+  config:
+    maxmemory: "256mb"
+    maxmemory-policy: "allkeys-lru"
+    save: ""  # Disable RDB snapshots for dev

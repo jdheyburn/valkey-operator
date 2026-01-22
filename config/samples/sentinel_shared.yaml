@@ -1,0 +1,133 @@
+# Example: Shared Sentinel Monitoring Multiple Valkey Instances
+# Use case: Cost-efficient HA across multiple environments
+---
+apiVersion: valkey.io/v1alpha1
+kind: Sentinel
+metadata:
+  name: shared-sentinel
+  namespace: default
+spec:
+  # 3 Sentinel instances
+  replicas: 3
+  quorum: 2
+
+  image: valkey/valkey:8.0
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+  # Default config used if Valkey doesn't override
+  defaultConfig:
+    down-after-milliseconds: "30000"
+    failover-timeout: "180000"
+    parallel-syncs: "1"
+
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: sentinel
+                app.kubernetes.io/instance: shared-sentinel
+            topologyKey: kubernetes.io/hostname
+
+---
+# Production Valkey: Fast failover
+apiVersion: valkey.io/v1alpha1
+kind: Valkey
+metadata:
+  name: prod-api-cache
+  namespace: default
+spec:
+  replicas: 5
+  image: valkey/valkey:8.0
+
+  sentinel:
+    name: shared-sentinel
+    # Override for fast production failover
+    config:
+      down-after-milliseconds: "10000"  # 10s
+      failover-timeout: "120000"
+
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClassName: gp3
+
+  config:
+    maxmemory: "768mb"
+    maxmemory-policy: "allkeys-lru"
+
+---
+# Staging Valkey: Moderate failover
+apiVersion: valkey.io/v1alpha1
+kind: Valkey
+metadata:
+  name: staging-api-cache
+  namespace: default
+spec:
+  replicas: 3
+  image: valkey/valkey:8.0
+
+  sentinel:
+    name: shared-sentinel
+    # Override for moderate failover
+    config:
+      down-after-milliseconds: "20000"  # 20s
+      failover-timeout: "180000"
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: gp3
+
+  config:
+    maxmemory: "384mb"
+    maxmemory-policy: "allkeys-lru"
+
+---
+# Development Valkey: Use defaults (30s)
+apiVersion: valkey.io/v1alpha1
+kind: Valkey
+metadata:
+  name: dev-api-cache
+  namespace: default
+spec:
+  replicas: 2
+  image: valkey/valkey:8.0
+
+  sentinel:
+    name: shared-sentinel
+    # No config override - uses Sentinel defaultConfig (30s)
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+
+  persistence:
+    enabled: false  # Ephemeral for dev
+
+  config:
+    maxmemory: "192mb"
+    maxmemory-policy: "allkeys-lru"
+
+# Result: One Sentinel (3 pods) monitors all three Valkey instances
+# Each with different failover SLAs based on environment

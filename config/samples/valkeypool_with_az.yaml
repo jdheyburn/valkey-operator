@@ -1,0 +1,97 @@
+# Example: ValkeyPool with AZ Distribution
+# Use case: Multi-AZ deployment for HA and cost optimization
+# Total pods: 27 (9 shards × 3 pods per shard)
+# Cost benefit: Reduces cross-AZ data transfer by pinning primaries to zones
+---
+apiVersion: valkey.io/v1alpha1
+kind: Sentinel
+metadata:
+  name: pool-sentinel
+  namespace: default
+spec:
+  replicas: 5  # More Sentinels for larger pool
+  quorum: 3
+
+  image: valkey/valkey:8.0
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+  defaultConfig:
+    down-after-milliseconds: "30000"
+    failover-timeout: "180000"
+    parallel-syncs: "1"
+
+---
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyPool
+metadata:
+  name: multi-az-pool
+  namespace: default
+spec:
+  # 9 shards distributed across 3 AZs
+  shards: 9
+
+  template:
+    image: valkey/valkey:8.0
+
+    # Each shard: 1 primary + 2 replicas
+    replicas: 3
+
+    # All shards monitored by same Sentinel
+    sentinel:
+      name: pool-sentinel
+      config:
+        down-after-milliseconds: "30000"
+
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClassName: gp3
+
+    podManagementType: statefulset
+
+    exporter:
+      enabled: true
+
+    config:
+      maxmemory: "1536mb"
+      maxmemory-policy: "allkeys-lru"
+
+  # AZ distribution configuration
+  azDistribution:
+    # 3 availability zones
+    zones:
+      - us-east-1a
+      - us-east-1b
+      - us-east-1c
+
+    nodeLabel: topology.kubernetes.io/zone
+
+    # Replicas prefer zones different from primary
+    replicaStrategy: anti-affinity
+
+# Resulting distribution:
+# Shard 0: primary in us-east-1a, replicas in us-east-1b/c
+# Shard 1: primary in us-east-1b, replicas in us-east-1a/c
+# Shard 2: primary in us-east-1c, replicas in us-east-1a/b
+# Shard 3: primary in us-east-1a, replicas in us-east-1b/c
+# ... (pattern repeats)
+#
+# Benefits:
+# - Even distribution across zones
+# - Replicas survive primary zone failure
+# - Application servers in us-east-1a talk to shard 0, 3, 6 primaries (same AZ, no cross-AZ charges)

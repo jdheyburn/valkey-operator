@@ -1,0 +1,56 @@
+# Example: Replicated Valkey Instance (Operator-Managed Failover)
+# Use case: Basic HA without Sentinel
+# Total pods: 3 (1 primary + 2 replicas)
+---
+apiVersion: valkey.io/v1alpha1
+kind: Valkey
+metadata:
+  name: staging-cache
+  namespace: default
+spec:
+  # 1 primary + 2 replicas
+  replicas: 3
+
+  image: valkey/valkey:8.0
+
+  # No sentinel - operator manages failover
+  # If primary fails, operator promotes best replica
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  # Persistent storage
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: gp3
+
+  # Use StatefulSet for stable network identity
+  podManagementType: statefulset
+
+  # Anti-affinity to spread pods across nodes
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: valkey
+                app.kubernetes.io/instance: staging-cache
+            topologyKey: kubernetes.io/hostname
+
+  exporter:
+    enabled: true
+
+  config:
+    maxmemory: "768mb"
+    maxmemory-policy: "allkeys-lru"
+    # Replication settings
+    repl-backlog-size: "16mb"
+    repl-backlog-ttl: "3600"

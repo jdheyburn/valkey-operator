@@ -1,0 +1,51 @@
+# Example: Basic ValkeyPool (Client-Side Sharding)
+# Use case: Horizontal scaling without Valkey Cluster protocol
+# Total pods: 15 (5 shards × 3 pods per shard)
+---
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyPool
+metadata:
+  name: app-cache-pool
+  namespace: default
+spec:
+  # 5 independent Valkey instances
+  shards: 5
+
+  # Template applied to all shards
+  template:
+    image: valkey/valkey:8.0
+
+    # Each shard: 1 primary + 2 replicas
+    replicas: 3
+
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "200m"
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClassName: gp3
+
+    podManagementType: statefulset
+
+    exporter:
+      enabled: true
+
+    config:
+      maxmemory: "768mb"
+      maxmemory-policy: "allkeys-lru"
+
+# This creates 5 Valkey resources:
+# - app-cache-pool-0 (3 pods)
+# - app-cache-pool-1 (3 pods)
+# - app-cache-pool-2 (3 pods)
+# - app-cache-pool-3 (3 pods)
+# - app-cache-pool-4 (3 pods)
+#
+# Client application uses consistent hashing to distribute keys:
+# hosts = ["app-cache-pool-0-0-svc", "app-cache-pool-1-0-svc", ...]

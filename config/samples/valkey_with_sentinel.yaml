@@ -1,0 +1,123 @@
+# Example: Valkey with Sentinel-Managed Failover
+# Use case: Production HA with automatic failover
+# Requires: Sentinel resource (see sentinel_shared.yaml)
+---
+apiVersion: valkey.io/v1alpha1
+kind: Sentinel
+metadata:
+  name: production-sentinel
+  namespace: default
+spec:
+  # 3 Sentinel instances for quorum
+  replicas: 3
+
+  # Quorum: (replicas / 2) + 1 = 2
+  quorum: 2
+
+  image: valkey/valkey:8.0
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+  # Default Sentinel configuration
+  # Individual Valkey instances can override these
+  defaultConfig:
+    down-after-milliseconds: "30000"  # 30s before marking down
+    failover-timeout: "180000"        # 3min failover timeout
+    parallel-syncs: "1"               # Conservative syncing
+
+  # Spread Sentinels across nodes
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: sentinel
+                app.kubernetes.io/instance: production-sentinel
+            topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: valkey.io/v1alpha1
+kind: Valkey
+metadata:
+  name: production-cache
+  namespace: default
+spec:
+  # 1 primary + 4 replicas for production
+  replicas: 5
+
+  image: valkey/valkey:8.0
+
+  # Reference Sentinel for automatic failover
+  sentinel:
+    name: production-sentinel
+    # Override Sentinel config for fast failover in production
+    config:
+      down-after-milliseconds: "10000"  # 10s - faster than default
+      failover-timeout: "120000"        # 2min
+      parallel-syncs: "1"
+
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClassName: gp3
+
+  podManagementType: statefulset
+
+  # Spread across nodes and zones
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: valkey
+                app.kubernetes.io/instance: production-cache
+            topologyKey: kubernetes.io/hostname
+        - weight: 50
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: valkey
+                app.kubernetes.io/instance: production-cache
+            topologyKey: topology.kubernetes.io/zone
+
+  exporter:
+    enabled: true
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+  # TLS enabled for production
+  tls:
+    enabled: true
+    certificateRef:
+      name: production-cache-tls
+
+  config:
+    maxmemory: "1536mb"
+    maxmemory-policy: "allkeys-lru"
+    # Replication settings
+    repl-backlog-size: "32mb"
+    repl-timeout: "60"
+    # Persistence settings
+    save: "900 1 300 10 60 10000"  # RDB snapshots
+    appendonly: "yes"               # AOF enabled
+    appendfsync: "everysec"

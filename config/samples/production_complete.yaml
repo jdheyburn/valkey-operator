@@ -1,0 +1,272 @@
+# Example: Complete Production Setup
+# Use case: Enterprise production deployment with all features
+# Components:
+# - ValkeyCluster for primary workload (server-side sharding)
+# - ValkeyPool for session cache (client-side sharding)
+# - Sentinel for high-availability
+# - TLS, monitoring, multi-AZ
+---
+# Sentinel for high-availability failover
+apiVersion: valkey.io/v1alpha1
+kind: Sentinel
+metadata:
+  name: production-sentinel
+  namespace: production
+  labels:
+    environment: production
+    component: sentinel
+spec:
+  replicas: 5  # 5 for higher quorum in production
+  quorum: 3
+
+  image: valkey/valkey:8.0
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "200m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  defaultConfig:
+    down-after-milliseconds: "15000"  # 15s detection
+    failover-timeout: "180000"
+    parallel-syncs: "1"
+
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: sentinel
+              app.kubernetes.io/instance: production-sentinel
+          topologyKey: kubernetes.io/hostname
+
+---
+# Primary ValkeyCluster for application data
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyCluster
+metadata:
+  name: app-data-cluster
+  namespace: production
+  labels:
+    environment: production
+    component: data-store
+spec:
+  image: valkey/valkey:8.0
+
+  # 5 shards for distributed data
+  shards: 5
+
+  # 1 primary + 2 replicas per shard = 15 total pods
+  replicas: 3
+
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "2000m"
+    limits:
+      memory: "8Gi"
+      cpu: "4000m"
+
+  persistence:
+    enabled: true
+    size: 200Gi
+    storageClassName: io2  # High-performance storage
+
+  # Multi-AZ distribution
+  azDistribution:
+    zones:
+      - us-east-1a
+      - us-east-1b
+      - us-east-1c
+    nodeLabel: topology.kubernetes.io/zone
+    replicaStrategy: anti-affinity
+
+  # Ensure pods spread across nodes
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: valkeycluster
+                app.kubernetes.io/instance: app-data-cluster
+            topologyKey: kubernetes.io/hostname
+
+  # Only schedule on high-memory nodes
+  nodeSelector:
+    node.kubernetes.io/instance-type: r6i.2xlarge
+
+  exporter:
+    enabled: true
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+
+  # TLS enabled
+  tls:
+    enabled: true
+    certificateRef:
+      name: app-data-cluster-tls
+
+  config:
+    cluster-node-timeout: "15000"
+    cluster-replica-validity-factor: "10"
+    maxmemory: "7gb"
+    maxmemory-policy: "allkeys-lru"
+    # AOF for durability
+    appendonly: "yes"
+    appendfsync: "everysec"
+    # Optimize for cluster
+    cluster-allow-reads-when-down: "no"
+    cluster-require-full-coverage: "yes"
+
+---
+# ValkeyPool for session cache (client-side sharding)
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyPool
+metadata:
+  name: session-cache-pool
+  namespace: production
+  labels:
+    environment: production
+    component: session-cache
+spec:
+  # 10 independent shards for session data
+  shards: 10
+
+  template:
+    image: valkey/valkey:8.0
+
+    # 1 primary + 2 replicas per shard = 30 total pods
+    replicas: 3
+
+    # Use Sentinel for automatic failover
+    sentinel:
+      name: production-sentinel
+      config:
+        down-after-milliseconds: "10000"  # Fast failover for sessions
+        failover-timeout: "120000"
+        parallel-syncs: "2"  # Faster recovery
+
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "1000m"
+      limits:
+        memory: "4Gi"
+        cpu: "2000m"
+
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClassName: gp3
+
+    nodeSelector:
+      node.kubernetes.io/instance-type: r6i.xlarge
+
+    exporter:
+      enabled: true
+
+    tls:
+      enabled: true
+      certificateRef:
+        name: session-cache-pool-tls
+
+    config:
+      maxmemory: "3gb"
+      maxmemory-policy: "allkeys-lru"
+      # Session TTL
+      maxmemory-samples: "10"
+      # Lighter persistence for sessions
+      save: "900 1"
+      appendonly: "no"
+
+  # Multi-AZ distribution
+  azDistribution:
+    zones:
+      - us-east-1a
+      - us-east-1b
+      - us-east-1c
+    nodeLabel: topology.kubernetes.io/zone
+    replicaStrategy: anti-affinity
+
+---
+# Standalone Valkey for rate limiting (low volume)
+apiVersion: valkey.io/v1alpha1
+kind: Valkey
+metadata:
+  name: rate-limit-cache
+  namespace: production
+  labels:
+    environment: production
+    component: rate-limiter
+spec:
+  # Small replicated instance
+  replicas: 3
+
+  image: valkey/valkey:8.0
+
+  sentinel:
+    name: production-sentinel
+    config:
+      down-after-milliseconds: "10000"
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  persistence:
+    enabled: false  # Ephemeral, rebuilt from API
+
+  nodeSelector:
+    node.kubernetes.io/instance-type: r6i.large
+
+  exporter:
+    enabled: true
+
+  config:
+    maxmemory: "768mb"
+    maxmemory-policy: "allkeys-lru"
+    # Fast eviction for rate limits
+    maxmemory-samples: "5"
+
+---
+# ServiceMonitor for Prometheus integration (if using prometheus-operator)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: valkey-metrics
+  namespace: production
+  labels:
+    environment: production
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+
+# Summary:
+# Total pods: 48
+# - 15 pods: ValkeyCluster (app-data-cluster)
+# - 30 pods: ValkeyPool (session-cache-pool)
+# - 3 pods: Valkey (rate-limit-cache)
+# - 5 pods: Sentinel (production-sentinel) - monitors ValkeyPool and rate-limit-cache
+#
+# All components:
+# - Multi-AZ for high availability
+# - TLS enabled
+# - Metrics exported to Prometheus
+# - Optimized resource allocation
+# - Appropriate persistence strategies

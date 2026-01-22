@@ -1,0 +1,86 @@
+# Example: ValkeyCluster with Multi-AZ Distribution
+# Use case: Production cluster with HA across availability zones
+# Total pods: 15 (5 shards × 3 pods per shard)
+---
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyCluster
+metadata:
+  name: multi-az-cluster
+  namespace: default
+spec:
+  image: valkey/valkey:8.0
+
+  # 5 shards for better slot distribution
+  shards: 5
+
+  # Each shard: 1 primary + 2 replicas
+  replicas: 3
+
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+
+  persistence:
+    enabled: true
+    size: 100Gi
+    storageClassName: gp3
+
+  podManagementType: statefulset
+
+  # AZ distribution for primaries
+  azDistribution:
+    zones:
+      - us-east-1a
+      - us-east-1b
+      - us-east-1c
+
+    nodeLabel: topology.kubernetes.io/zone
+
+    # Replicas avoid primary's zone
+    replicaStrategy: anti-affinity
+
+  # Additional pod anti-affinity to spread across nodes
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: valkeycluster
+                app.kubernetes.io/instance: multi-az-cluster
+            topologyKey: kubernetes.io/hostname
+
+  exporter:
+    enabled: true
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+  # TLS for cluster communication
+  tls:
+    enabled: true
+    certificateRef:
+      name: multi-az-cluster-tls
+
+  config:
+    cluster-node-timeout: "15000"
+    cluster-replica-validity-factor: "10"
+    maxmemory: "3gb"
+    maxmemory-policy: "allkeys-lru"
+    appendonly: "yes"
+    appendfsync: "everysec"
+
+# AZ Distribution:
+# Shard 0 primary: us-east-1a (slots 0-3276)
+# Shard 1 primary: us-east-1b (slots 3277-6553)
+# Shard 2 primary: us-east-1c (slots 6554-9829)
+# Shard 3 primary: us-east-1a (slots 9830-13106)
+# Shard 4 primary: us-east-1b (slots 13107-16383)
+#
+# Each shard's replicas are in different zones from primary

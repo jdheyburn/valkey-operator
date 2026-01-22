@@ -1,0 +1,65 @@
+# Example: Basic ValkeyCluster (Server-Side Sharding)
+# Use case: Production sharding with automatic slot distribution
+# Total pods: 9 (3 shards × 3 pods per shard)
+# Requires: Cluster-aware client
+---
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyCluster
+metadata:
+  name: production-cluster
+  namespace: default
+spec:
+  image: valkey/valkey:8.0
+
+  # Minimum 3 shards required by Valkey Cluster protocol
+  shards: 3
+
+  # Each shard: 1 primary + 2 replicas
+  replicas: 3
+
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClassName: gp3
+
+  podManagementType: statefulset
+
+  exporter:
+    enabled: true
+
+  config:
+    # Cluster-specific configuration
+    cluster-node-timeout: "15000"
+    cluster-replica-validity-factor: "10"
+    cluster-migration-barrier: "1"
+    cluster-require-full-coverage: "yes"
+    # General configuration
+    maxmemory: "1536mb"
+    maxmemory-policy: "allkeys-lru"
+    # Persistence
+    appendonly: "yes"
+    appendfsync: "everysec"
+
+# Hash slot distribution (automatic):
+# Shard 0: slots 0-5461 (5462 slots)
+# Shard 1: slots 5462-10922 (5461 slots)
+# Shard 2: slots 10923-16383 (5461 slots)
+#
+# ValkeyNodes created:
+# - production-cluster-0-0 (shard 0 primary)
+# - production-cluster-0-1 (shard 0 replica 1)
+# - production-cluster-0-2 (shard 0 replica 2)
+# - production-cluster-1-0 (shard 1 primary)
+# - production-cluster-1-1 (shard 1 replica 1)
+# - production-cluster-1-2 (shard 1 replica 2)
+# - production-cluster-2-0 (shard 2 primary)
+# - production-cluster-2-1 (shard 2 replica 1)
+# - production-cluster-2-2 (shard 2 replica 2)
