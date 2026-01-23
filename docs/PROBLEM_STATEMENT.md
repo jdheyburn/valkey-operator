@@ -14,10 +14,18 @@ We would like to design the CRDs so that we have a vision to work towards.
 
 ## Additional design tips when designing Operators
 
-See these two Obsidian notes, which were taken from KubeCon talks:
+Ensure that the design meets the guidance below:
+
+- [Kubernetes - API Conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md)
+- [Kubernetes - Changing the API](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api_changes.md)
+
+See these Obsidian notes, which were taken from KubeCon talks:
 
 - `/Users/joseph.heyburn/Obsidian/Get-Started/notes/Kubernetes CRD Design for the Long Haul Tips, Tricks, and Lessons Learned.md`
 - `/Users/joseph.heyburn/Obsidian/Get-Started/notes/Simplify Kubernetes Operator Development With a Modular Design Pattern.md`
+- `/Users/joseph.heyburn/Obsidian/Get-Started/notes/Don't Write Controllers Like Charlie Don't Does Avoiding Common Kubernetes Controller Mistakes.md`
+- `/Users/joseph.heyburn/Obsidian/Get-Started/notes/Don't Do What Charlie Don't Does - Avoiding Common CRD Design errors.md`
+- `/Users/joseph.heyburn/Obsidian/Get-Started/notes/Engineering a Kubernetes Operator Lessons Learned from Versions 1 to 5.md`
 
 ## Additional information
 
