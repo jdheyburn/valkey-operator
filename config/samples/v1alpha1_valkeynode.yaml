@@ -1,0 +1,30 @@
+# ValkeyNode is an internal CRD - users should not create these directly.
+# This sample is for testing and development purposes only.
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyNode
+metadata:
+  name: sample-valkeynode
+  namespace: default
+spec:
+  # Required: Valkey container image
+  image: valkey/valkey:8.0
+
+  # Optional: Resource requirements
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  # Optional: Node selector for scheduling
+  # nodeSelector:
+  #   node-type: valkey
+
+  # Optional: Tolerations
+  # tolerations:
+  #   - key: "dedicated"
+  #     operator: "Equal"
+  #     value: "valkey"
+  #     effect: "NoSchedule"
