@@ -1,22 +1,24 @@
 # ValkeyNode is an internal CRD - users should not create these directly.
 # This sample is for testing and development purposes only.
+#
+# Example 1: StatefulSet (default workload type)
 apiVersion: valkey.io/v1alpha1
 kind: ValkeyNode
 metadata:
-  name: sample-valkeynode
+  name: cache-0-master
   namespace: default
 spec:
   # Required: Valkey container image
   image: valkey/valkey:9.0.1
+
+  # Optional: Workload type - StatefulSet (default) or Deployment
+  # workloadType: StatefulSet
 
   # Optional: Resource requirements
   resources:
     requests:
       memory: "256Mi"
       cpu: "100m"
-    limits:
-      memory: "1Gi"
-      cpu: "500m"
 
   # Optional: Node selector for scheduling
   # nodeSelector:
@@ -28,3 +30,19 @@ spec:
   #     operator: "Equal"
   #     value: "valkey"
   #     effect: "NoSchedule"
+
+---
+# Example 2: Deployment workload type
+# Use Deployment when you don't need stable network identity
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyNode
+metadata:
+  name: cache-standalone
+  namespace: default
+spec:
+  image: valkey/valkey:9.0.1
+  workloadType: Deployment
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
