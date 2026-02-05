@@ -21,11 +21,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// WorkloadType specifies the type of workload to create for the ValkeyNode.
+// +kubebuilder:validation:Enum=StatefulSet;Deployment
+type WorkloadType string
+
+const (
+	// WorkloadTypeStatefulSet creates a StatefulSet with stable network identity.
+	WorkloadTypeStatefulSet WorkloadType = "StatefulSet"
+	// WorkloadTypeDeployment creates a Deployment for simpler, stateless workloads.
+	WorkloadTypeDeployment WorkloadType = "Deployment"
+)
+
 // ValkeyNodeSpec defines the desired state of ValkeyNode.
 type ValkeyNodeSpec struct {
 	// Image is the Valkey container image to use.
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
+
+	// WorkloadType specifies whether to create a StatefulSet or Deployment.
+	// StatefulSet provides stable network identity, Deployment is simpler.
+	// +kubebuilder:default=StatefulSet
+	// +optional
+	WorkloadType WorkloadType `json:"workloadType,omitempty"`
 
 	// Resources defines the resource requirements for the Valkey container.
 	// +optional
@@ -72,8 +89,6 @@ type ValkeyNodeStatus struct {
 const (
 	// ValkeyNodeConditionReady indicates the ValkeyNode is ready.
 	ValkeyNodeConditionReady = "Ready"
-	// ValkeyNodeConditionStatefulSetReady indicates the StatefulSet is ready.
-	ValkeyNodeConditionStatefulSetReady = "StatefulSetReady"
 )
 
 const (
@@ -81,10 +96,6 @@ const (
 	ValkeyNodeReasonPodRunning = "PodRunning"
 	// ValkeyNodeReasonPodNotReady indicates the pod is not ready.
 	ValkeyNodeReasonPodNotReady = "PodNotReady"
-	// ValkeyNodeReasonStatefulSetNotReady indicates the StatefulSet is not ready.
-	ValkeyNodeReasonStatefulSetNotReady = "StatefulSetNotReady"
-	// ValkeyNodeReasonReplicaAvailable indicates the replica is available.
-	ValkeyNodeReasonReplicaAvailable = "ReplicaAvailable"
 )
 
 // +kubebuilder:object:root=true

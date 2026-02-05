@@ -43,6 +43,10 @@ func valkeyNodeLabels(node *valkeyiov1alpha1.ValkeyNode) map[string]string {
 // buildHeadlessService creates a headless Service for the ValkeyNode.
 func buildHeadlessService(node *valkeyiov1alpha1.ValkeyNode) *corev1.Service {
 	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Service",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      valkeyNodeResourceName(node),
 			Namespace: node.Namespace,
@@ -62,6 +66,77 @@ func buildHeadlessService(node *valkeyiov1alpha1.ValkeyNode) *corev1.Service {
 	}
 }
 
+// buildPodTemplateSpec creates the pod template spec for ValkeyNode workloads.
+func buildPodTemplateSpec(node *valkeyiov1alpha1.ValkeyNode, labels map[string]string) corev1.PodTemplateSpec {
+	return corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: labels,
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:      "valkey",
+					Image:     node.Spec.Image,
+					Resources: node.Spec.Resources,
+					Ports: []corev1.ContainerPort{
+						{
+							Name:          "valkey",
+							ContainerPort: DefaultPort,
+						},
+					},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							TCPSocket: &corev1.TCPSocketAction{
+								Port: intstr.FromInt(DefaultPort),
+							},
+						},
+						InitialDelaySeconds: 5,
+						PeriodSeconds:       5,
+					},
+					LivenessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							TCPSocket: &corev1.TCPSocketAction{
+								Port: intstr.FromInt(DefaultPort),
+							},
+						},
+						InitialDelaySeconds: 15,
+						PeriodSeconds:       10,
+					},
+				},
+			},
+			NodeSelector: node.Spec.NodeSelector,
+			Affinity:     node.Spec.Affinity,
+			Tolerations:  node.Spec.Tolerations,
+		},
+	}
+}
+
+// buildDeployment creates a Deployment for the ValkeyNode.
+func buildDeployment(node *valkeyiov1alpha1.ValkeyNode) *appsv1.Deployment {
+	replicas := int32(1)
+	labels := valkeyNodeLabels(node)
+	resourceName := valkeyNodeResourceName(node)
+
+	return &appsv1.Deployment{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceName,
+			Namespace: node.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: buildPodTemplateSpec(node, labels),
+		},
+	}
+}
+
 // buildStatefulSet creates a StatefulSet for the ValkeyNode.
 func buildStatefulSet(node *valkeyiov1alpha1.ValkeyNode) *appsv1.StatefulSet {
 	replicas := int32(1)
@@ -69,6 +144,10 @@ func buildStatefulSet(node *valkeyiov1alpha1.ValkeyNode) *appsv1.StatefulSet {
 	resourceName := valkeyNodeResourceName(node)
 
 	return &appsv1.StatefulSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "StatefulSet",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      resourceName,
 			Namespace: node.Namespace,
@@ -80,47 +159,7 @@ func buildStatefulSet(node *valkeyiov1alpha1.ValkeyNode) *appsv1.StatefulSet {
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:      "valkey",
-							Image:     node.Spec.Image,
-							Resources: node.Spec.Resources,
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "valkey",
-									ContainerPort: DefaultPort,
-								},
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt(DefaultPort),
-									},
-								},
-								InitialDelaySeconds: 5,
-								PeriodSeconds:       5,
-							},
-							LivenessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt(DefaultPort),
-									},
-								},
-								InitialDelaySeconds: 15,
-								PeriodSeconds:       10,
-							},
-						},
-					},
-					NodeSelector: node.Spec.NodeSelector,
-					Affinity:     node.Spec.Affinity,
-					Tolerations:  node.Spec.Tolerations,
-				},
-			},
+			Template: buildPodTemplateSpec(node, labels),
 		},
 	}
 }

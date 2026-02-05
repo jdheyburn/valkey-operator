@@ -22,7 +22,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -48,6 +47,7 @@ type ValkeyNodeReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="apps",resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="apps",resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile moves the current state of the ValkeyNode closer to the desired state.
@@ -66,9 +66,15 @@ func (r *ValkeyNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	// Ensure StatefulSet exists
-	if err := r.ensureStatefulSet(ctx, node); err != nil {
-		return ctrl.Result{}, err
+	// Ensure workload exists (StatefulSet or Deployment)
+	if node.Spec.WorkloadType == valkeyiov1alpha1.WorkloadTypeDeployment {
+		if err := r.ensureDeployment(ctx, node); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		if err := r.ensureStatefulSet(ctx, node); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Update status from StatefulSet and Pod
@@ -86,127 +92,52 @@ func (r *ValkeyNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
-// ensureService creates or updates the headless Service for the ValkeyNode.
+// ensureService creates or updates the headless Service for the ValkeyNode using server-side apply.
 func (r *ValkeyNodeReconciler) ensureService(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) error {
-	log := logf.FromContext(ctx)
-
 	desired := buildHeadlessService(node)
 	if err := controllerutil.SetControllerReference(node, desired, r.Scheme); err != nil {
 		return err
 	}
 
-	existing := &corev1.Service{}
-	err := r.Get(ctx, client.ObjectKeyFromObject(desired), existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("creating headless Service", "service", desired.Name)
-			if err := r.Create(ctx, desired); err != nil {
-				r.Recorder.Eventf(node, corev1.EventTypeWarning, "ServiceCreateFailed", "Failed to create Service: %v", err)
-				return err
-			}
-			r.Recorder.Event(node, corev1.EventTypeNormal, "ServiceCreated", "Created headless Service")
-			return nil
-		}
-		return err
-	}
-
-	// Update if needed (selector or ports changed)
-	existing.Spec.Selector = desired.Spec.Selector
-	existing.Spec.Ports = desired.Spec.Ports
-	if err := r.Update(ctx, existing); err != nil {
-		r.Recorder.Eventf(node, corev1.EventTypeWarning, "ServiceUpdateFailed", "Failed to update Service: %v", err)
-		return err
-	}
-
-	return nil
+	return r.Patch(ctx, desired, client.Apply, client.FieldOwner("valkeynode-controller"), client.ForceOwnership)
 }
 
-// ensureStatefulSet creates or updates the StatefulSet for the ValkeyNode.
+// ensureStatefulSet creates or updates the StatefulSet for the ValkeyNode using server-side apply.
 func (r *ValkeyNodeReconciler) ensureStatefulSet(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) error {
-	log := logf.FromContext(ctx)
-
 	desired := buildStatefulSet(node)
 	if err := controllerutil.SetControllerReference(node, desired, r.Scheme); err != nil {
 		return err
 	}
 
-	existing := &appsv1.StatefulSet{}
-	err := r.Get(ctx, client.ObjectKeyFromObject(desired), existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("creating StatefulSet", "statefulset", desired.Name)
-			if err := r.Create(ctx, desired); err != nil {
-				r.Recorder.Eventf(node, corev1.EventTypeWarning, "StatefulSetCreateFailed", "Failed to create StatefulSet: %v", err)
-				return err
-			}
-			r.Recorder.Event(node, corev1.EventTypeNormal, "StatefulSetCreated", "Created StatefulSet")
-			return nil
-		}
-		return err
-	}
-
-	// Update mutable fields if needed
-	existing.Spec.Template.Spec.Containers[0].Image = desired.Spec.Template.Spec.Containers[0].Image
-	existing.Spec.Template.Spec.Containers[0].Resources = desired.Spec.Template.Spec.Containers[0].Resources
-	existing.Spec.Template.Spec.NodeSelector = desired.Spec.Template.Spec.NodeSelector
-	existing.Spec.Template.Spec.Affinity = desired.Spec.Template.Spec.Affinity
-	existing.Spec.Template.Spec.Tolerations = desired.Spec.Template.Spec.Tolerations
-
-	if err := r.Update(ctx, existing); err != nil {
-		r.Recorder.Eventf(node, corev1.EventTypeWarning, "StatefulSetUpdateFailed", "Failed to update StatefulSet: %v", err)
-		return err
-	}
-
-	return nil
+	return r.Patch(ctx, desired, client.Apply, client.FieldOwner("valkeynode-controller"), client.ForceOwnership)
 }
 
-// updateStatus updates the ValkeyNode status based on StatefulSet and Pod state.
+// ensureDeployment creates or updates the Deployment for the ValkeyNode using server-side apply.
+func (r *ValkeyNodeReconciler) ensureDeployment(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) error {
+	desired := buildDeployment(node)
+	if err := controllerutil.SetControllerReference(node, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	return r.Patch(ctx, desired, client.Apply, client.FieldOwner("valkeynode-controller"), client.ForceOwnership)
+}
+
+// updateStatus updates the ValkeyNode status based on Pod state.
 func (r *ValkeyNodeReconciler) updateStatus(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) error {
 	log := logf.FromContext(ctx)
 	resourceName := valkeyNodeResourceName(node)
 
-	// Get StatefulSet
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: node.Namespace, Name: resourceName}, sts); err != nil {
-		if apierrors.IsNotFound(err) {
-			// StatefulSet not yet created
-			return nil
-		}
-		return err
-	}
-
 	// Update service name
 	node.Status.ServiceName = resourceName
 
-	// Check StatefulSet readiness
-	stsReady := sts.Status.ReadyReplicas >= 1
-	if stsReady {
-		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
-			Type:               valkeyiov1alpha1.ValkeyNodeConditionStatefulSetReady,
-			Status:             metav1.ConditionTrue,
-			Reason:             valkeyiov1alpha1.ValkeyNodeReasonReplicaAvailable,
-			Message:            "StatefulSet has 1/1 ready replicas",
-			ObservedGeneration: node.Generation,
-		})
-	} else {
-		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
-			Type:               valkeyiov1alpha1.ValkeyNodeConditionStatefulSetReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             valkeyiov1alpha1.ValkeyNodeReasonStatefulSetNotReady,
-			Message:            "StatefulSet does not have ready replicas",
-			ObservedGeneration: node.Generation,
-		})
-	}
+	// Get pod by label selector (works for both StatefulSet and Deployment)
+	pod := r.getPod(ctx, node)
 
-	// Get Pod info
-	podName := resourceName + "-0"
-	pod := &corev1.Pod{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: node.Namespace, Name: podName}, pod); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return err
-		}
-		// Pod not yet created
+	// Update pod info and ready condition
+	if pod == nil {
 		node.Status.Ready = false
+		node.Status.PodName = ""
+		node.Status.PodIP = ""
 		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
 			Type:               valkeyiov1alpha1.ValkeyNodeConditionReady,
 			Status:             metav1.ConditionFalse,
@@ -218,7 +149,7 @@ func (r *ValkeyNodeReconciler) updateStatus(ctx context.Context, node *valkeyiov
 		node.Status.PodName = pod.Name
 		node.Status.PodIP = pod.Status.PodIP
 
-		// Check pod readiness
+		// Check pod readiness from its conditions
 		podReady := false
 		for _, cond := range pod.Status.Conditions {
 			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
@@ -227,13 +158,13 @@ func (r *ValkeyNodeReconciler) updateStatus(ctx context.Context, node *valkeyiov
 			}
 		}
 
-		node.Status.Ready = podReady && stsReady
-		if node.Status.Ready {
+		node.Status.Ready = podReady
+		if podReady {
 			meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
 				Type:               valkeyiov1alpha1.ValkeyNodeConditionReady,
 				Status:             metav1.ConditionTrue,
 				Reason:             valkeyiov1alpha1.ValkeyNodeReasonPodRunning,
-				Message:            "StatefulSet pod is running and ready",
+				Message:            "Pod is running and ready",
 				ObservedGeneration: node.Generation,
 			})
 		} else {
@@ -256,12 +187,27 @@ func (r *ValkeyNodeReconciler) updateStatus(ctx context.Context, node *valkeyiov
 	return nil
 }
 
+// getPod returns the pod for a ValkeyNode by listing with label selector.
+func (r *ValkeyNodeReconciler) getPod(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) *corev1.Pod {
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList,
+		client.InNamespace(node.Namespace),
+		client.MatchingLabels(valkeyNodeLabels(node))); err != nil {
+		return nil
+	}
+	if len(podList.Items) > 0 {
+		return &podList.Items[0]
+	}
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ValkeyNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&valkeyiov1alpha1.ValkeyNode{}).
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Named("valkeynode").
 		Complete(r)
 }

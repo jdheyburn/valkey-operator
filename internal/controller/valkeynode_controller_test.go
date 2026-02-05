@@ -125,11 +125,6 @@ var _ = Describe("ValkeyNode Controller", func() {
 			Expect(*sts.Spec.Replicas).To(Equal(int32(1)))
 			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
 			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("valkey/valkey:8.0"))
-
-			By("verifying events were recorded")
-			events := collectEvents(fakeRecorder)
-			Expect(events).To(ContainElement(ContainSubstring("ServiceCreated")))
-			Expect(events).To(ContainElement(ContainSubstring("StatefulSetCreated")))
 		})
 
 		It("should set correct labels on resources", func() {
@@ -346,6 +341,153 @@ var _ = Describe("ValkeyNode Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Context("When reconciling a ValkeyNode with Deployment workloadType", func() {
+		const resourceName = "test-deployment-valkeynode"
+		const managedResourceName = "valkey-" + resourceName
+
+		var (
+			typeNamespacedName        types.NamespacedName
+			managedResourceNamespaced types.NamespacedName
+			valkeyNode                *valkeyiov1alpha1.ValkeyNode
+		)
+
+		BeforeEach(func() {
+			typeNamespacedName = types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}
+			managedResourceNamespaced = types.NamespacedName{
+				Name:      managedResourceName,
+				Namespace: "default",
+			}
+
+			By("creating the ValkeyNode CR with Deployment workloadType")
+			valkeyNode = &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image:        "valkey/valkey:8.0",
+					WorkloadType: valkeyiov1alpha1.WorkloadTypeDeployment,
+				},
+			}
+			Expect(k8sClient.Create(testCtx, valkeyNode)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			By("cleaning up the ValkeyNode CR")
+			resource := &valkeyiov1alpha1.ValkeyNode{}
+			err := k8sClient.Get(testCtx, typeNamespacedName, resource)
+			if err == nil {
+				Expect(k8sClient.Delete(testCtx, resource)).To(Succeed())
+			}
+		})
+
+		It("should create Deployment and Service (not StatefulSet)", func() {
+			By("reconciling the ValkeyNode")
+			_, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the headless Service was created")
+			svc := &corev1.Service{}
+			Eventually(func() error {
+				return k8sClient.Get(testCtx, managedResourceNamespaced, svc)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
+
+			By("verifying the Deployment was created")
+			deploy := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(testCtx, managedResourceNamespaced, deploy)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
+			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("valkey/valkey:8.0"))
+
+			By("verifying no StatefulSet was created")
+			sts := &appsv1.StatefulSet{}
+			err = k8sClient.Get(testCtx, managedResourceNamespaced, sts)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should set correct labels on Deployment", func() {
+			By("reconciling the ValkeyNode")
+			_, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			expectedLabels := map[string]string{
+				"app.kubernetes.io/name":       "valkey",
+				"app.kubernetes.io/instance":   resourceName,
+				"app.kubernetes.io/managed-by": "valkey-operator",
+				"app.kubernetes.io/component":  "valkeynode",
+			}
+
+			By("verifying labels on Deployment")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, deploy)).To(Succeed())
+			for key, value := range expectedLabels {
+				Expect(deploy.Labels).To(HaveKeyWithValue(key, value))
+			}
+			for key, value := range expectedLabels {
+				Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue(key, value))
+			}
+		})
+
+		It("should update Deployment when spec.image changes", func() {
+			By("reconciling to create initial resources")
+			_, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("updating the ValkeyNode image")
+			Expect(k8sClient.Get(testCtx, typeNamespacedName, valkeyNode)).To(Succeed())
+			valkeyNode.Spec.Image = "valkey/valkey:8.1"
+			Expect(k8sClient.Update(testCtx, valkeyNode)).To(Succeed())
+
+			By("reconciling the updated ValkeyNode")
+			_, err = reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the Deployment image was updated")
+			deploy := &appsv1.Deployment{}
+			Eventually(func() string {
+				if err := k8sClient.Get(testCtx, managedResourceNamespaced, deploy); err != nil {
+					return ""
+				}
+				if len(deploy.Spec.Template.Spec.Containers) == 0 {
+					return ""
+				}
+				return deploy.Spec.Template.Spec.Containers[0].Image
+			}, timeout, interval).Should(Equal("valkey/valkey:8.1"))
+		})
+
+		It("should set owner reference on Deployment", func() {
+			By("reconciling the ValkeyNode")
+			_, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying owner reference on Deployment")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, deploy)).To(Succeed())
+
+			Expect(deploy.OwnerReferences).To(HaveLen(1))
+			Expect(deploy.OwnerReferences[0].Name).To(Equal(resourceName))
+			Expect(deploy.OwnerReferences[0].Kind).To(Equal("ValkeyNode"))
+		})
+	})
 })
 
 var _ = Describe("ValkeyNode Resource Builders", func() {
@@ -560,6 +702,107 @@ var _ = Describe("ValkeyNode Resource Builders", func() {
 			Expect(sts.Spec.Template.Spec.Containers[0].Ports).To(HaveLen(1))
 			Expect(sts.Spec.Template.Spec.Containers[0].Ports[0].Name).To(Equal("valkey"))
 			Expect(sts.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(DefaultPort)))
+		})
+	})
+
+	Describe("buildDeployment", func() {
+		It("creates correct deployment spec with probes", func() {
+			node := &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-node",
+					Namespace: "test-ns",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("100m"),
+							corev1.ResourceMemory: resource.MustParse("128Mi"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("512Mi"),
+						},
+					},
+				},
+			}
+
+			deploy := buildDeployment(node)
+
+			By("verifying basic properties")
+			Expect(deploy.Name).To(Equal("valkey-test-node"))
+			Expect(deploy.Namespace).To(Equal("test-ns"))
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
+
+			By("verifying container spec")
+			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+			container := deploy.Spec.Template.Spec.Containers[0]
+			Expect(container.Name).To(Equal("valkey"))
+			Expect(container.Image).To(Equal("valkey/valkey:8.0"))
+
+			By("verifying resource requirements")
+			Expect(container.Resources.Requests[corev1.ResourceCPU]).To(Equal(resource.MustParse("100m")))
+			Expect(container.Resources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("128Mi")))
+			Expect(container.Resources.Limits[corev1.ResourceCPU]).To(Equal(resource.MustParse("500m")))
+			Expect(container.Resources.Limits[corev1.ResourceMemory]).To(Equal(resource.MustParse("512Mi")))
+
+			By("verifying readiness probe")
+			Expect(container.ReadinessProbe).NotTo(BeNil())
+			Expect(container.ReadinessProbe.TCPSocket).NotTo(BeNil())
+			Expect(container.ReadinessProbe.TCPSocket.Port.IntValue()).To(Equal(DefaultPort))
+
+			By("verifying liveness probe")
+			Expect(container.LivenessProbe).NotTo(BeNil())
+			Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil())
+			Expect(container.LivenessProbe.TCPSocket.Port.IntValue()).To(Equal(DefaultPort))
+		})
+
+		It("applies scheduling constraints", func() {
+			node := &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-node",
+					Namespace: "default",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+					NodeSelector: map[string]string{
+						"disktype": "ssd",
+					},
+					Tolerations: []corev1.Toleration{
+						{
+							Key:      "dedicated",
+							Operator: corev1.TolerationOpEqual,
+							Value:    "valkey",
+							Effect:   corev1.TaintEffectNoSchedule,
+						},
+					},
+				},
+			}
+
+			deploy := buildDeployment(node)
+
+			Expect(deploy.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue("disktype", "ssd"))
+			Expect(deploy.Spec.Template.Spec.Tolerations).To(HaveLen(1))
+			Expect(deploy.Spec.Template.Spec.Tolerations[0].Key).To(Equal("dedicated"))
+		})
+
+		It("sets correct labels and selectors", func() {
+			node := &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "label-test",
+					Namespace: "default",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+				},
+			}
+
+			deploy := buildDeployment(node)
+			expectedLabels := valkeyNodeLabels(node)
+
+			Expect(deploy.Labels).To(Equal(expectedLabels))
+			Expect(deploy.Spec.Selector.MatchLabels).To(Equal(expectedLabels))
+			Expect(deploy.Spec.Template.Labels).To(Equal(expectedLabels))
 		})
 	})
 })

@@ -1081,6 +1081,15 @@ spec:
                       type: string
                   type: object
                 type: array
+              workloadType:
+                default: StatefulSet
+                description: |-
+                  WorkloadType specifies whether to create a StatefulSet or Deployment.
+                  StatefulSet provides stable network identity, Deployment is simpler.
+                enum:
+                - StatefulSet
+                - Deployment
+                type: string
             required:
             - image
             type: object
