@@ -59,6 +59,11 @@ type ValkeyNodeSpec struct {
 	// Tolerations defines the pod tolerations.
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Config specifies additional Valkey configuration options.
+	// These are merged with required defaults and controller-managed settings.
+	// +optional
+	Config map[string]string `json:"config,omitempty"`
 }
 
 // ValkeyNodeStatus defines the observed state of ValkeyNode.

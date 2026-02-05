@@ -974,6 +974,13 @@ spec:
                         x-kubernetes-list-type: atomic
                     type: object
                 type: object
+              config:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Config specifies additional Valkey configuration options.
+                  These are merged with required defaults and controller-managed settings.
+                type: object
               image:
                 description: Image is the Valkey container image to use.
                 type: string

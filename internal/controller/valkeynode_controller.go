@@ -45,6 +45,7 @@ type ValkeyNodeReconciler struct {
 // +kubebuilder:rbac:groups=valkey.io,resources=valkeynodes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=valkey.io,resources=valkeynodes/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="apps",resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="apps",resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -63,6 +64,11 @@ func (r *ValkeyNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Ensure headless Service exists
 	if err := r.ensureService(ctx, node); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Ensure ConfigMap exists
+	if err := r.ensureConfigMap(ctx, node); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -103,6 +109,16 @@ func (r *ValkeyNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // ensureService creates or updates the headless Service for the ValkeyNode using server-side apply.
 func (r *ValkeyNodeReconciler) ensureService(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) error {
 	desired := buildHeadlessService(node)
+	if err := controllerutil.SetControllerReference(node, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	return r.Patch(ctx, desired, client.Apply, client.FieldOwner("valkeynode-controller"), client.ForceOwnership)
+}
+
+// ensureConfigMap creates or updates the ConfigMap for the ValkeyNode using server-side apply.
+func (r *ValkeyNodeReconciler) ensureConfigMap(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) error {
+	desired := buildConfigMap(node)
 	if err := controllerutil.SetControllerReference(node, desired, r.Scheme); err != nil {
 		return err
 	}
@@ -285,6 +301,7 @@ func (r *ValkeyNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&valkeyiov1alpha1.ValkeyNode{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&appsv1.Deployment{}).
 		Named("valkeynode").

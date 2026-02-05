@@ -30,6 +30,10 @@ spec:
   #     operator: "Equal"
   #     value: "valkey"
   #     effect: "NoSchedule"
+  config:
+    maxmemory: "1gb"
+    maxmemory-policy: "allkeys-lru"
+    appendonly: "yes"
 
 ---
 # Example 2: Deployment workload type
@@ -46,3 +50,23 @@ spec:
     requests:
       memory: "256Mi"
       cpu: "100m"
+
+# ---
+# # Example 3: With custom Valkey configuration
+# apiVersion: valkey.io/v1alpha1
+# kind: ValkeyNode
+# metadata:
+#   name: cache-with-config
+#   namespace: default
+# spec:
+#   image: valkey/valkey:9.0.1
+#   resources:
+#     requests:
+#       memory: "1Gi"
+#       cpu: "500m"
+#   # Optional: Custom Valkey configuration options
+#   # These are merged with required defaults and controller-managed settings
+#   config:
+#     maxmemory: "1gb"
+#     maxmemory-policy: "allkeys-lru"
+#     appendonly: "yes"

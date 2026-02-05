@@ -17,6 +17,11 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +42,48 @@ func valkeyNodeLabels(node *valkeyiov1alpha1.ValkeyNode) map[string]string {
 		"app.kubernetes.io/instance":   node.Name,
 		"app.kubernetes.io/managed-by": "valkey-operator",
 		"app.kubernetes.io/component":  "valkeynode",
+	}
+}
+
+// buildConfigMap creates a ConfigMap containing the Valkey configuration for the ValkeyNode.
+func buildConfigMap(node *valkeyiov1alpha1.ValkeyNode) *corev1.ConfigMap {
+	// Required defaults
+	config := map[string]string{
+		"bind":           "0.0.0.0",
+		"protected-mode": "no",
+	}
+
+	// Merge user config (can override defaults)
+	for k, v := range node.Spec.Config {
+		config[k] = v
+	}
+
+	// Controller-managed settings (always applied, cannot be overridden)
+	serviceDNS := fmt.Sprintf("%s.%s.svc.cluster.local", valkeyNodeResourceName(node), node.Namespace)
+	config["replica-announce-ip"] = serviceDNS
+	config["replica-announce-port"] = strconv.Itoa(DefaultPort)
+
+	// Build config file content
+	var lines []string
+	for k, v := range config {
+		lines = append(lines, fmt.Sprintf("%s %s", k, v))
+	}
+	sort.Strings(lines) // Consistent ordering
+	configData := strings.Join(lines, "\n")
+
+	return &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      valkeyNodeResourceName(node),
+			Namespace: node.Namespace,
+			Labels:    valkeyNodeLabels(node),
+		},
+		Data: map[string]string{
+			"valkey.conf": configData,
+		},
 	}
 }
 
@@ -68,15 +115,37 @@ func buildHeadlessService(node *valkeyiov1alpha1.ValkeyNode) *corev1.Service {
 
 // buildPodTemplateSpec creates the pod template spec for ValkeyNode workloads.
 func buildPodTemplateSpec(node *valkeyiov1alpha1.ValkeyNode, labels map[string]string) corev1.PodTemplateSpec {
+	resourceName := valkeyNodeResourceName(node)
+
 	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: labels,
 		},
 		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{
+				{
+					Name: "config",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: resourceName,
+							},
+						},
+					},
+				},
+			},
 			Containers: []corev1.Container{
 				{
-					Name:      "valkey",
-					Image:     node.Spec.Image,
+					Name:    "valkey",
+					Image:   node.Spec.Image,
+					Command: []string{"valkey-server", "/etc/valkey/valkey.conf"},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "config",
+							MountPath: "/etc/valkey",
+							ReadOnly:  true,
+						},
+					},
 					Resources: node.Spec.Resources,
 					Ports: []corev1.ContainerPort{
 						{

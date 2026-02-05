@@ -619,6 +619,160 @@ var _ = Describe("ValkeyNode Controller", func() {
 			Expect(deploy.OwnerReferences[0].Kind).To(Equal("ValkeyNode"))
 		})
 	})
+
+	Context("When managing ConfigMaps", func() {
+		const resourceName = "test-configmap-valkeynode"
+		const managedResourceName = "valkey-" + resourceName
+
+		var (
+			typeNamespacedName        types.NamespacedName
+			managedResourceNamespaced types.NamespacedName
+			valkeyNode                *valkeyiov1alpha1.ValkeyNode
+		)
+
+		BeforeEach(func() {
+			typeNamespacedName = types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}
+			managedResourceNamespaced = types.NamespacedName{
+				Name:      managedResourceName,
+				Namespace: "default",
+			}
+
+			By("creating the ValkeyNode CR")
+			valkeyNode = &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+				},
+			}
+			Expect(k8sClient.Create(testCtx, valkeyNode)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			By("cleaning up the ValkeyNode CR")
+			resource := &valkeyiov1alpha1.ValkeyNode{}
+			err := k8sClient.Get(testCtx, typeNamespacedName, resource)
+			if err == nil {
+				Expect(k8sClient.Delete(testCtx, resource)).To(Succeed())
+			}
+		})
+
+		It("should create ConfigMap when ValkeyNode is created", func() {
+			By("reconciling the ValkeyNode")
+			_, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the ConfigMap was created")
+			cm := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(testCtx, managedResourceNamespaced, cm)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(cm.Data).To(HaveKey("valkey.conf"))
+			configContent := cm.Data["valkey.conf"]
+			Expect(configContent).To(ContainSubstring("bind 0.0.0.0"))
+			Expect(configContent).To(ContainSubstring("protected-mode no"))
+			Expect(configContent).To(ContainSubstring("replica-announce-ip"))
+			Expect(configContent).To(ContainSubstring("replica-announce-port 6379"))
+		})
+
+		It("should update ConfigMap when spec.config changes", func() {
+			By("reconciling to create initial resources")
+			_, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("updating the ValkeyNode config")
+			Expect(k8sClient.Get(testCtx, typeNamespacedName, valkeyNode)).To(Succeed())
+			valkeyNode.Spec.Config = map[string]string{
+				"maxmemory":        "2gb",
+				"maxmemory-policy": "volatile-lru",
+			}
+			Expect(k8sClient.Update(testCtx, valkeyNode)).To(Succeed())
+
+			By("reconciling the updated ValkeyNode")
+			_, err = reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the ConfigMap was updated")
+			cm := &corev1.ConfigMap{}
+			Eventually(func() bool {
+				if err := k8sClient.Get(testCtx, managedResourceNamespaced, cm); err != nil {
+					return false
+				}
+				return cm.Data["valkey.conf"] != ""
+			}, timeout, interval).Should(BeTrue())
+
+			configContent := cm.Data["valkey.conf"]
+			Expect(configContent).To(ContainSubstring("maxmemory 2gb"))
+			Expect(configContent).To(ContainSubstring("maxmemory-policy volatile-lru"))
+		})
+
+		It("should set owner reference on ConfigMap", func() {
+			By("reconciling the ValkeyNode")
+			_, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying owner reference on ConfigMap")
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, cm)).To(Succeed())
+
+			Expect(cm.OwnerReferences).To(HaveLen(1))
+			Expect(cm.OwnerReferences[0].Name).To(Equal(resourceName))
+			Expect(cm.OwnerReferences[0].Kind).To(Equal("ValkeyNode"))
+		})
+
+		It("should create StatefulSet with config volume mounted", func() {
+			By("reconciling the ValkeyNode")
+			_, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the StatefulSet has config volume")
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, sts)).To(Succeed())
+
+			// Verify volume exists
+			var configVolumeFound bool
+			for _, vol := range sts.Spec.Template.Spec.Volumes {
+				if vol.Name == "config" && vol.ConfigMap != nil {
+					Expect(vol.ConfigMap.Name).To(Equal(managedResourceName))
+					configVolumeFound = true
+					break
+				}
+			}
+			Expect(configVolumeFound).To(BeTrue(), "config volume should exist")
+
+			// Verify volume mount exists
+			container := sts.Spec.Template.Spec.Containers[0]
+			var mountFound bool
+			for _, mount := range container.VolumeMounts {
+				if mount.Name == "config" {
+					Expect(mount.MountPath).To(Equal("/etc/valkey"))
+					Expect(mount.ReadOnly).To(BeTrue())
+					mountFound = true
+					break
+				}
+			}
+			Expect(mountFound).To(BeTrue(), "config volume mount should exist")
+
+			// Verify command uses config file
+			Expect(container.Command).To(Equal([]string{"valkey-server", "/etc/valkey/valkey.conf"}))
+		})
+	})
 })
 
 var _ = Describe("ValkeyNode Resource Builders", func() {
@@ -934,6 +1088,138 @@ var _ = Describe("ValkeyNode Resource Builders", func() {
 			Expect(deploy.Labels).To(Equal(expectedLabels))
 			Expect(deploy.Spec.Selector.MatchLabels).To(Equal(expectedLabels))
 			Expect(deploy.Spec.Template.Labels).To(Equal(expectedLabels))
+		})
+	})
+
+	Describe("buildConfigMap", func() {
+		It("generates correct defaults", func() {
+			node := &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-node",
+					Namespace: "test-ns",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+				},
+			}
+
+			cm := buildConfigMap(node)
+
+			Expect(cm.Name).To(Equal("valkey-test-node"))
+			Expect(cm.Namespace).To(Equal("test-ns"))
+			Expect(cm.Data).To(HaveKey("valkey.conf"))
+
+			configContent := cm.Data["valkey.conf"]
+			Expect(configContent).To(ContainSubstring("bind 0.0.0.0"))
+			Expect(configContent).To(ContainSubstring("protected-mode no"))
+		})
+
+		It("merges user config from spec.config", func() {
+			node := &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-node",
+					Namespace: "default",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+					Config: map[string]string{
+						"maxmemory":        "1gb",
+						"maxmemory-policy": "allkeys-lru",
+					},
+				},
+			}
+
+			cm := buildConfigMap(node)
+			configContent := cm.Data["valkey.conf"]
+
+			Expect(configContent).To(ContainSubstring("maxmemory 1gb"))
+			Expect(configContent).To(ContainSubstring("maxmemory-policy allkeys-lru"))
+			// Defaults should still be present
+			Expect(configContent).To(ContainSubstring("bind 0.0.0.0"))
+		})
+
+		It("always includes replica-announce-ip and replica-announce-port", func() {
+			node := &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cache-0",
+					Namespace: "prod",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+				},
+			}
+
+			cm := buildConfigMap(node)
+			configContent := cm.Data["valkey.conf"]
+
+			Expect(configContent).To(ContainSubstring("replica-announce-ip valkey-cache-0.prod.svc.cluster.local"))
+			Expect(configContent).To(ContainSubstring("replica-announce-port 6379"))
+		})
+
+		It("controller-managed settings cannot be overridden by user config", func() {
+			node := &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-node",
+					Namespace: "default",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+					Config: map[string]string{
+						"replica-announce-ip":   "malicious.example.com",
+						"replica-announce-port": "9999",
+					},
+				},
+			}
+
+			cm := buildConfigMap(node)
+			configContent := cm.Data["valkey.conf"]
+
+			// Controller-managed settings should win
+			Expect(configContent).To(ContainSubstring("replica-announce-ip valkey-test-node.default.svc.cluster.local"))
+			Expect(configContent).To(ContainSubstring("replica-announce-port 6379"))
+			// User values should NOT be present
+			Expect(configContent).NotTo(ContainSubstring("malicious.example.com"))
+			Expect(configContent).NotTo(ContainSubstring("9999"))
+		})
+
+		It("user config can override defaults", func() {
+			node := &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-node",
+					Namespace: "default",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+					Config: map[string]string{
+						"protected-mode": "yes",
+						"bind":           "127.0.0.1",
+					},
+				},
+			}
+
+			cm := buildConfigMap(node)
+			configContent := cm.Data["valkey.conf"]
+
+			// User overrides should win over defaults
+			Expect(configContent).To(ContainSubstring("protected-mode yes"))
+			Expect(configContent).To(ContainSubstring("bind 127.0.0.1"))
+		})
+
+		It("sets correct labels", func() {
+			node := &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "label-test",
+					Namespace: "default",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image: "valkey/valkey:8.0",
+				},
+			}
+
+			cm := buildConfigMap(node)
+			expectedLabels := valkeyNodeLabels(node)
+
+			Expect(cm.Labels).To(Equal(expectedLabels))
 		})
 	})
 })
