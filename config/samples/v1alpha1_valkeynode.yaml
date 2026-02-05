@@ -7,7 +7,7 @@ metadata:
   namespace: default
 spec:
   # Required: Valkey container image
-  image: valkey/valkey:8.0
+  image: valkey/valkey:9.0.1
 
   # Optional: Resource requirements
   resources:

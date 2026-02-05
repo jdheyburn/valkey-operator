@@ -59,15 +59,21 @@ var _ = Describe("ValkeyNode Controller", func() {
 
 	Context("When reconciling a new ValkeyNode", func() {
 		const resourceName = "test-valkeynode"
+		const managedResourceName = "valkey-" + resourceName
 
 		var (
-			typeNamespacedName types.NamespacedName
-			valkeyNode         *valkeyiov1alpha1.ValkeyNode
+			typeNamespacedName        types.NamespacedName
+			managedResourceNamespaced types.NamespacedName
+			valkeyNode                *valkeyiov1alpha1.ValkeyNode
 		)
 
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
+				Namespace: "default",
+			}
+			managedResourceNamespaced = types.NamespacedName{
+				Name:      managedResourceName,
 				Namespace: "default",
 			}
 
@@ -103,7 +109,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 			By("verifying the headless Service was created")
 			svc := &corev1.Service{}
 			Eventually(func() error {
-				return k8sClient.Get(testCtx, typeNamespacedName, svc)
+				return k8sClient.Get(testCtx, managedResourceNamespaced, svc)
 			}, timeout, interval).Should(Succeed())
 
 			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
@@ -113,7 +119,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 			By("verifying the StatefulSet was created")
 			sts := &appsv1.StatefulSet{}
 			Eventually(func() error {
-				return k8sClient.Get(testCtx, typeNamespacedName, sts)
+				return k8sClient.Get(testCtx, managedResourceNamespaced, sts)
 			}, timeout, interval).Should(Succeed())
 
 			Expect(*sts.Spec.Replicas).To(Equal(int32(1)))
@@ -142,7 +148,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 
 			By("verifying labels on Service")
 			svc := &corev1.Service{}
-			Expect(k8sClient.Get(testCtx, typeNamespacedName, svc)).To(Succeed())
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, svc)).To(Succeed())
 			for key, value := range expectedLabels {
 				Expect(svc.Labels).To(HaveKeyWithValue(key, value))
 			}
@@ -152,7 +158,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 
 			By("verifying labels on StatefulSet")
 			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(testCtx, typeNamespacedName, sts)).To(Succeed())
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, sts)).To(Succeed())
 			for key, value := range expectedLabels {
 				Expect(sts.Labels).To(HaveKeyWithValue(key, value))
 			}
@@ -170,9 +176,9 @@ var _ = Describe("ValkeyNode Controller", func() {
 
 			By("verifying resources exist")
 			svc := &corev1.Service{}
-			Expect(k8sClient.Get(testCtx, typeNamespacedName, svc)).To(Succeed())
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, svc)).To(Succeed())
 			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(testCtx, typeNamespacedName, sts)).To(Succeed())
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, sts)).To(Succeed())
 
 			By("verifying owner references are set")
 			Expect(svc.OwnerReferences).To(HaveLen(1))
@@ -196,15 +202,21 @@ var _ = Describe("ValkeyNode Controller", func() {
 
 	Context("When updating a ValkeyNode", func() {
 		const resourceName = "test-update-valkeynode"
+		const managedResourceName = "valkey-" + resourceName
 
 		var (
-			typeNamespacedName types.NamespacedName
-			valkeyNode         *valkeyiov1alpha1.ValkeyNode
+			typeNamespacedName        types.NamespacedName
+			managedResourceNamespaced types.NamespacedName
+			valkeyNode                *valkeyiov1alpha1.ValkeyNode
 		)
 
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
+				Namespace: "default",
+			}
+			managedResourceNamespaced = types.NamespacedName{
+				Name:      managedResourceName,
 				Namespace: "default",
 			}
 
@@ -251,7 +263,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 			By("verifying the StatefulSet image was updated")
 			sts := &appsv1.StatefulSet{}
 			Eventually(func() string {
-				if err := k8sClient.Get(testCtx, typeNamespacedName, sts); err != nil {
+				if err := k8sClient.Get(testCtx, managedResourceNamespaced, sts); err != nil {
 					return ""
 				}
 				if len(sts.Spec.Template.Spec.Containers) == 0 {
@@ -264,12 +276,12 @@ var _ = Describe("ValkeyNode Controller", func() {
 		It("should restore the image to match ValkeyNode spec when externally modified", func() {
 			By("externally modifying the StatefulSet image")
 			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(testCtx, typeNamespacedName, sts)).To(Succeed())
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, sts)).To(Succeed())
 			sts.Spec.Template.Spec.Containers[0].Image = "modified/image:latest"
 			Expect(k8sClient.Update(testCtx, sts)).To(Succeed())
 
 			By("verifying the image was modified")
-			Expect(k8sClient.Get(testCtx, typeNamespacedName, sts)).To(Succeed())
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, sts)).To(Succeed())
 			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("modified/image:latest"))
 
 			By("reconciling to restore the correct image")
@@ -280,7 +292,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 
 			By("verifying the image was restored")
 			Eventually(func() string {
-				if err := k8sClient.Get(testCtx, typeNamespacedName, sts); err != nil {
+				if err := k8sClient.Get(testCtx, managedResourceNamespaced, sts); err != nil {
 					return ""
 				}
 				return sts.Spec.Template.Spec.Containers[0].Image
@@ -312,7 +324,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 
 			By("verifying the StatefulSet has scheduling constraints")
 			sts := &appsv1.StatefulSet{}
-			Expect(k8sClient.Get(testCtx, typeNamespacedName, sts)).To(Succeed())
+			Expect(k8sClient.Get(testCtx, managedResourceNamespaced, sts)).To(Succeed())
 
 			Expect(sts.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue("disktype", "ssd"))
 			Expect(sts.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue("env", "production"))
@@ -383,7 +395,7 @@ var _ = Describe("ValkeyNode Resource Builders", func() {
 
 			svc := buildHeadlessService(node)
 
-			Expect(svc.Name).To(Equal("test-node"))
+			Expect(svc.Name).To(Equal("valkey-test-node"))
 			Expect(svc.Namespace).To(Equal("test-ns"))
 			Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
 			Expect(svc.Spec.Ports).To(HaveLen(1))
@@ -433,10 +445,10 @@ var _ = Describe("ValkeyNode Resource Builders", func() {
 			sts := buildStatefulSet(node)
 
 			By("verifying basic properties")
-			Expect(sts.Name).To(Equal("test-node"))
+			Expect(sts.Name).To(Equal("valkey-test-node"))
 			Expect(sts.Namespace).To(Equal("test-ns"))
 			Expect(*sts.Spec.Replicas).To(Equal(int32(1)))
-			Expect(sts.Spec.ServiceName).To(Equal("test-node"))
+			Expect(sts.Spec.ServiceName).To(Equal("valkey-test-node"))
 
 			By("verifying container spec")
 			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))

@@ -25,6 +25,11 @@ import (
 	valkeyiov1alpha1 "valkey.io/valkey-operator/api/v1alpha1"
 )
 
+// valkeyNodeResourceName returns the name for resources created by a ValkeyNode.
+func valkeyNodeResourceName(node *valkeyiov1alpha1.ValkeyNode) string {
+	return "valkey-" + node.Name
+}
+
 // valkeyNodeLabels returns the standard labels for ValkeyNode resources.
 func valkeyNodeLabels(node *valkeyiov1alpha1.ValkeyNode) map[string]string {
 	return map[string]string{
@@ -39,7 +44,7 @@ func valkeyNodeLabels(node *valkeyiov1alpha1.ValkeyNode) map[string]string {
 func buildHeadlessService(node *valkeyiov1alpha1.ValkeyNode) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      node.Name,
+			Name:      valkeyNodeResourceName(node),
 			Namespace: node.Namespace,
 			Labels:    valkeyNodeLabels(node),
 		},
@@ -61,15 +66,16 @@ func buildHeadlessService(node *valkeyiov1alpha1.ValkeyNode) *corev1.Service {
 func buildStatefulSet(node *valkeyiov1alpha1.ValkeyNode) *appsv1.StatefulSet {
 	replicas := int32(1)
 	labels := valkeyNodeLabels(node)
+	resourceName := valkeyNodeResourceName(node)
 
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      node.Name,
+			Name:      resourceName,
 			Namespace: node.Namespace,
 			Labels:    labels,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			ServiceName: node.Name,
+			ServiceName: resourceName,
 			Replicas:    &replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,

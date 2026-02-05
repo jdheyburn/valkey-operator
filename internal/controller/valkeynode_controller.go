@@ -163,10 +163,11 @@ func (r *ValkeyNodeReconciler) ensureStatefulSet(ctx context.Context, node *valk
 // updateStatus updates the ValkeyNode status based on StatefulSet and Pod state.
 func (r *ValkeyNodeReconciler) updateStatus(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) error {
 	log := logf.FromContext(ctx)
+	resourceName := valkeyNodeResourceName(node)
 
 	// Get StatefulSet
 	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: node.Namespace, Name: node.Name}, sts); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Namespace: node.Namespace, Name: resourceName}, sts); err != nil {
 		if apierrors.IsNotFound(err) {
 			// StatefulSet not yet created
 			return nil
@@ -175,7 +176,7 @@ func (r *ValkeyNodeReconciler) updateStatus(ctx context.Context, node *valkeyiov
 	}
 
 	// Update service name
-	node.Status.ServiceName = node.Name
+	node.Status.ServiceName = resourceName
 
 	// Check StatefulSet readiness
 	stsReady := sts.Status.ReadyReplicas >= 1
@@ -198,7 +199,7 @@ func (r *ValkeyNodeReconciler) updateStatus(ctx context.Context, node *valkeyiov
 	}
 
 	// Get Pod info
-	podName := node.Name + "-0"
+	podName := resourceName + "-0"
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: node.Namespace, Name: podName}, pod); err != nil {
 		if !apierrors.IsNotFound(err) {
