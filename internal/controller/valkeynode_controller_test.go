@@ -342,6 +342,137 @@ var _ = Describe("ValkeyNode Controller", func() {
 		})
 	})
 
+	Context("When changing workloadType", func() {
+		const resourceName = "test-workload-switch"
+		const managedResourceName = "valkey-" + resourceName
+
+		var (
+			typeNamespacedName        types.NamespacedName
+			managedResourceNamespaced types.NamespacedName
+			valkeyNode                *valkeyiov1alpha1.ValkeyNode
+		)
+
+		BeforeEach(func() {
+			typeNamespacedName = types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}
+			managedResourceNamespaced = types.NamespacedName{
+				Name:      managedResourceName,
+				Namespace: "default",
+			}
+
+			By("creating a ValkeyNode with StatefulSet workloadType")
+			valkeyNode = &valkeyiov1alpha1.ValkeyNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: valkeyiov1alpha1.ValkeyNodeSpec{
+					Image:        "valkey/valkey:8.0",
+					WorkloadType: valkeyiov1alpha1.WorkloadTypeStatefulSet,
+				},
+			}
+			Expect(k8sClient.Create(testCtx, valkeyNode)).To(Succeed())
+
+			By("reconciling until StatefulSet is created")
+			Eventually(func() error {
+				reconciler.Reconcile(testCtx, reconcile.Request{NamespacedName: typeNamespacedName})
+				sts := &appsv1.StatefulSet{}
+				return k8sClient.Get(testCtx, managedResourceNamespaced, sts)
+			}, timeout, interval).Should(Succeed())
+		})
+
+		AfterEach(func() {
+			By("cleaning up the ValkeyNode CR")
+			resource := &valkeyiov1alpha1.ValkeyNode{}
+			err := k8sClient.Get(testCtx, typeNamespacedName, resource)
+			if err == nil {
+				Expect(k8sClient.Delete(testCtx, resource)).To(Succeed())
+			}
+		})
+
+		It("should delete StatefulSet when switching to Deployment", func() {
+			By("changing workloadType to Deployment")
+			Expect(k8sClient.Get(testCtx, typeNamespacedName, valkeyNode)).To(Succeed())
+			valkeyNode.Spec.WorkloadType = valkeyiov1alpha1.WorkloadTypeDeployment
+			Expect(k8sClient.Update(testCtx, valkeyNode)).To(Succeed())
+
+			By("reconciling - should delete StatefulSet")
+			result, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "should requeue to wait for cleanup")
+
+			By("verifying StatefulSet is being deleted")
+			sts := &appsv1.StatefulSet{}
+			Eventually(func() bool {
+				err := k8sClient.Get(testCtx, managedResourceNamespaced, sts)
+				return errors.IsNotFound(err)
+			}, timeout, interval).Should(BeTrue())
+
+			By("reconciling again - should create Deployment")
+			_, err = reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying Deployment was created")
+			deploy := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(testCtx, managedResourceNamespaced, deploy)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("valkey/valkey:8.0"))
+		})
+
+		It("should delete Deployment when switching to StatefulSet", func() {
+			By("first switching to Deployment")
+			Expect(k8sClient.Get(testCtx, typeNamespacedName, valkeyNode)).To(Succeed())
+			valkeyNode.Spec.WorkloadType = valkeyiov1alpha1.WorkloadTypeDeployment
+			Expect(k8sClient.Update(testCtx, valkeyNode)).To(Succeed())
+
+			// Reconcile until Deployment is created
+			Eventually(func() error {
+				reconciler.Reconcile(testCtx, reconcile.Request{NamespacedName: typeNamespacedName})
+				deploy := &appsv1.Deployment{}
+				return k8sClient.Get(testCtx, managedResourceNamespaced, deploy)
+			}, timeout, interval).Should(Succeed())
+
+			By("now switching back to StatefulSet")
+			Expect(k8sClient.Get(testCtx, typeNamespacedName, valkeyNode)).To(Succeed())
+			valkeyNode.Spec.WorkloadType = valkeyiov1alpha1.WorkloadTypeStatefulSet
+			Expect(k8sClient.Update(testCtx, valkeyNode)).To(Succeed())
+
+			By("reconciling - should delete Deployment")
+			result, err := reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "should requeue to wait for cleanup")
+
+			By("verifying Deployment is being deleted")
+			deploy := &appsv1.Deployment{}
+			Eventually(func() bool {
+				err := k8sClient.Get(testCtx, managedResourceNamespaced, deploy)
+				return errors.IsNotFound(err)
+			}, timeout, interval).Should(BeTrue())
+
+			By("reconciling again - should create StatefulSet")
+			_, err = reconciler.Reconcile(testCtx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying StatefulSet was created")
+			sts := &appsv1.StatefulSet{}
+			Eventually(func() error {
+				return k8sClient.Get(testCtx, managedResourceNamespaced, sts)
+			}, timeout, interval).Should(Succeed())
+		})
+	})
+
 	Context("When reconciling a ValkeyNode with Deployment workloadType", func() {
 		const resourceName = "test-deployment-valkeynode"
 		const managedResourceName = "valkey-" + resourceName

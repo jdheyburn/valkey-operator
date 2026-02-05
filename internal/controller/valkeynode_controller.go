@@ -66,6 +66,14 @@ func (r *ValkeyNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	// Handle workload type change - delete old workload and wait for pods to be removed
+	if requeue, err := r.cleanupOldWorkload(ctx, node); err != nil {
+		return ctrl.Result{}, err
+	} else if requeue {
+		log.V(1).Info("waiting for old workload cleanup")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
 	// Ensure workload exists (StatefulSet or Deployment)
 	if node.Spec.WorkloadType == valkeyiov1alpha1.WorkloadTypeDeployment {
 		if err := r.ensureDeployment(ctx, node); err != nil {
@@ -120,6 +128,77 @@ func (r *ValkeyNodeReconciler) ensureDeployment(ctx context.Context, node *valke
 	}
 
 	return r.Patch(ctx, desired, client.Apply, client.FieldOwner("valkeynode-controller"), client.ForceOwnership)
+}
+
+// cleanupOldWorkload removes the old workload type if workloadType was changed.
+// Returns true if cleanup is in progress and reconciliation should requeue.
+func (r *ValkeyNodeReconciler) cleanupOldWorkload(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) (bool, error) {
+	log := logf.FromContext(ctx)
+	resourceName := valkeyNodeResourceName(node)
+
+	var wrongWorkloadExists bool
+
+	if node.Spec.WorkloadType == valkeyiov1alpha1.WorkloadTypeDeployment {
+		// Check if StatefulSet exists (wrong workload type)
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: node.Namespace, Name: resourceName}, sts); err == nil {
+			// StatefulSet exists, delete it
+			log.Info("deleting StatefulSet due to workloadType change", "statefulset", resourceName)
+			if err := r.Delete(ctx, sts); err != nil {
+				return false, err
+			}
+			wrongWorkloadExists = true
+		}
+	} else {
+		// Check if Deployment exists (wrong workload type)
+		deploy := &appsv1.Deployment{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: node.Namespace, Name: resourceName}, deploy); err == nil {
+			// Deployment exists, delete it
+			log.Info("deleting Deployment due to workloadType change", "deployment", resourceName)
+			if err := r.Delete(ctx, deploy); err != nil {
+				return false, err
+			}
+			wrongWorkloadExists = true
+		}
+	}
+
+	// If we just deleted the wrong workload, wait for pods to be removed
+	if wrongWorkloadExists {
+		return true, nil // Requeue to wait for deletion
+	}
+
+	// Check if correct workload exists - if so, no cleanup needed
+	var correctWorkloadExists bool
+	if node.Spec.WorkloadType == valkeyiov1alpha1.WorkloadTypeDeployment {
+		deploy := &appsv1.Deployment{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: node.Namespace, Name: resourceName}, deploy); err == nil {
+			correctWorkloadExists = true
+		}
+	} else {
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: node.Namespace, Name: resourceName}, sts); err == nil {
+			correctWorkloadExists = true
+		}
+	}
+
+	// If correct workload exists, cleanup is complete
+	if correctWorkloadExists {
+		return false, nil
+	}
+
+	// Neither workload exists - check if pods are still terminating
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList,
+		client.InNamespace(node.Namespace),
+		client.MatchingLabels(valkeyNodeLabels(node))); err != nil {
+		return false, err
+	}
+	if len(podList.Items) > 0 {
+		log.V(1).Info("waiting for pods to be removed", "count", len(podList.Items))
+		return true, nil // Pods still exist, requeue
+	}
+
+	return false, nil // Cleanup complete, ready to create new workload
 }
 
 // updateStatus updates the ValkeyNode status based on Pod state.
