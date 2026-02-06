@@ -19,6 +19,7 @@ package controller
 import (
 	"maps"
 
+	valkeyiov1alpha1 "valkey.io/valkey-operator/api/v1alpha1"
 	valkeyv1 "valkey.io/valkey-operator/api/v1alpha1"
 )
 
@@ -37,6 +38,16 @@ func labels(cluster *valkeyv1.ValkeyCluster) map[string]string {
 	l["app.kubernetes.io/part-of"] = appName
 	l["app.kubernetes.io/managed-by"] = "valkey-operator"
 	return l
+}
+
+// valkeyNodeLabels returns the standard labels for ValkeyNode resources.
+func valkeyNodeLabels(node *valkeyiov1alpha1.ValkeyNode) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       "valkey",
+		"app.kubernetes.io/instance":   node.Name,
+		"app.kubernetes.io/managed-by": "valkey-operator",
+		"app.kubernetes.io/component":  "valkey-node",
+	}
 }
 
 // Annotations returns a copy of user defined annotations.

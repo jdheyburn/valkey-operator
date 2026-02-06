@@ -1,0 +1,6 @@
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyNode
+metadata:
+  name: sample-0
+spec:
+  image: valkey/valkey:9.0.1
