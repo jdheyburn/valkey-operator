@@ -1,0 +1,59 @@
+name: Feature request
+description: Propose a new feature or enhancement
+title: "[FEATURE]: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Before opening this issue
+
+        For new feature ideas that haven't been discussed yet, please start a
+        [Discussion](https://github.com/valkey-io/valkey-operator/discussions/categories/ideas)
+        first. Issues should be created for features that have already been triaged and
+        agreed upon by maintainers.
+
+        If you're unsure whether to open a Discussion or an Issue, start with a Discussion.
+
+  - type: textarea
+    id: discussion-link
+    attributes:
+      label: Related Discussion
+      description: Link to the Discussion where this feature was proposed and agreed upon.
+      placeholder: https://github.com/valkey-io/valkey-operator/discussions/...
+    validations:
+      required: false
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A brief description of the feature.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this feature needed? What problem does it solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution
+      description: How should this feature work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any additional information, links, or references.
+    validations:
+      required: false

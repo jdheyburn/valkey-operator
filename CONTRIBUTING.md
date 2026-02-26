@@ -36,23 +36,34 @@ make run
 
 ## How to Contribute
 
+We follow a **Discussion → Issue → PR** workflow for most contributions. This ensures alignment on design before implementation work begins.
+
+### Trivial Fixes
+
+For typos, doc corrections, broken links, or obvious one-line bug fixes, you can open a PR directly -- no Discussion or Issue needed.
+
 ### Reporting Bugs
 
-Found a bug? Please [open an issue](https://github.com/valkey-io/valkey-operator/issues/new).
+Found a bug? [Open a bug report issue](https://github.com/valkey-io/valkey-operator/issues/new?template=bug_report.yaml). If a fix is straightforward, you're welcome to submit a PR linking the issue.
 
-### Suggesting Features
+### Suggesting Features or Design Changes
 
-Have an idea? Start a discussion in [GitHub Discussions](https://github.com/valkey-io/valkey-operator/discussions) under the "Ideas" category. This helps gather community feedback before opening an issue or PR.
+1. **Start a [Discussion](https://github.com/valkey-io/valkey-operator/discussions)** under the "Ideas" or "Design Proposals" category. This is where we align on whether the feature fits the project and agree on the approach.
+2. **Once the approach is agreed upon**, a maintainer will create (or ask you to create) a tracked Issue.
+3. **Submit a PR** that references the Issue.
+
+**PRs for new features or design changes that skip this process will not be reviewed.** This isn't about gatekeeping -- it's to avoid wasted effort on work that may not align with the project's direction.
 
 ### Submitting Pull Requests
 
-1. **Fork the repository** and create a branch from `main`
-2. **Make your changes** following our coding standards (below)
-3. **Add tests** for new functionality
-4. **Run tests and linting**: `make test lint`
-5. **Update documentation** if needed
-6. **Commit with clear messages** describing what and why
-7. **Open a Pull Request** with a clear description
+1. **Ensure there is a linked Issue or Discussion** (unless it's a trivial fix)
+2. **Fork the repository** and create a branch from `main`
+3. **Make your changes** following our coding standards (below)
+4. **Add tests** for new functionality
+5. **Run tests and linting**: `make test lint`
+6. **Update documentation** if needed
+7. **Commit with clear messages** describing what and why
+8. **Open a Pull Request** filling out the PR template, linking the related Issue
 
 We'll review your PR as soon as possible. Be patient and responsive to feedback.
 

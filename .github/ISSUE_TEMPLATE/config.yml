@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Feature Idea or Design Proposal
+    url: https://github.com/valkey-io/valkey-operator/discussions/new?category=ideas
+    about: Have an idea for a new feature? Start a Discussion first so we can align on the design before implementation.
+  - name: Design Proposal
+    url: https://github.com/valkey-io/valkey-operator/discussions/new?category=design-proposal
+    about: Proposing an architectural change or major feature? Use the Design Proposal discussion template.
+  - name: Question
+    url: https://github.com/valkey-io/valkey-operator/discussions/new?category=q-and-a
+    about: Have a question about using the operator? Ask in Discussions.
