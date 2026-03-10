@@ -123,7 +123,8 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	if err := r.upsertDeployments(ctx, cluster); err != nil {
+	targetShards, err := r.upsertDeployments(ctx, cluster)
+	if err != nil {
 		setCondition(cluster, valkeyiov1alpha1.ConditionReady, valkeyiov1alpha1.ReasonDeploymentError, err.Error(), metav1.ConditionFalse)
 		_ = r.updateStatus(ctx, cluster, nil)
 		return ctrl.Result{}, err
@@ -173,7 +174,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// is a no-op; new primaries stay in PendingNodes until the rebalancer
 	// migrates slots to them.
 	if len(state.PendingNodes) > 0 {
-		assigned, err := r.assignSlotsToPendingPrimaries(ctx, cluster, state, pods)
+		assigned, err := r.assignSlotsToPendingPrimaries(ctx, cluster, state, pods, targetShards)
 		if err != nil {
 			setCondition(cluster, valkeyiov1alpha1.ConditionDegraded, valkeyiov1alpha1.ReasonNodeAddFailed, err.Error(), metav1.ConditionTrue)
 			_ = r.updateStatus(ctx, cluster, state)
@@ -217,10 +218,13 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// and include them as empty shards for health checks and rebalancing.
 	allShards := effectiveShards(state, pods)
 
-	// Check cluster status
-	if len(allShards) < int(cluster.Spec.Shards) {
+	// Check cluster status against the number of shards we have actually
+	// deployed this reconcile pass (targetShards), not the final desired
+	// count. This allows the cluster to reach a healthy state with fewer
+	// shards before the next shard is added.
+	if len(allShards) < targetShards {
 		log.V(1).Info("missing shards, requeue..")
-		r.Recorder.Eventf(cluster, nil, corev1.EventTypeNormal, "WaitingForShards", "CheckShards", "%d of %d shards exist", len(allShards), cluster.Spec.Shards)
+		r.Recorder.Eventf(cluster, nil, corev1.EventTypeNormal, "WaitingForShards", "CheckShards", "%d of %d shards exist", len(allShards), targetShards)
 		setCondition(cluster, valkeyiov1alpha1.ConditionReady, valkeyiov1alpha1.ReasonMissingShards, "Waiting for all shards to be created", metav1.ConditionFalse)
 		setCondition(cluster, valkeyiov1alpha1.ConditionProgressing, valkeyiov1alpha1.ReasonReconciling, "Creating shards", metav1.ConditionTrue)
 		setCondition(cluster, valkeyiov1alpha1.ConditionClusterFormed, valkeyiov1alpha1.ReasonMissingShards, "Waiting for shards", metav1.ConditionFalse)
@@ -277,7 +281,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// time using CLUSTER MIGRATESLOTS (atomic migration, requires
 	// Valkey >= 9.0). Each pass requeues so the next reconcile
 	// re-evaluates cluster state with fresh topology before continuing.
-	rebalanced, err := r.rebalanceSlots(ctx, cluster, allShards)
+	rebalanced, err := r.rebalanceSlots(ctx, cluster, allShards, targetShards)
 	if err != nil {
 		log.Error(err, "slot rebalancing failed")
 		r.Recorder.Eventf(cluster, nil, corev1.EventTypeWarning, "SlotRebalanceFailed", "RebalanceSlots", "Slot rebalancing failed: %v", err)
@@ -399,32 +403,78 @@ aclfile /config/users/users.acl`,
 	return nil
 }
 
-// upsertDeployments ensures every (shard, nodeIndex) pair has a Deployment.
-// Each Deployment manages exactly one Pod (Replicas=1) and is named
-// deterministically:
+// countDeployedShards returns the number of distinct shard indices that
+// already have at least one Deployment in the cluster's namespace. It does
+// this by listing all Deployments that carry the cluster's common labels and
+// collecting unique values of the valkey.io/shard-index label.
+func (r *ValkeyClusterReconciler) countDeployedShards(ctx context.Context, cluster *valkeyiov1alpha1.ValkeyCluster) (int, error) {
+	deployments := &appsv1.DeploymentList{}
+	if err := r.List(ctx, deployments, client.InNamespace(cluster.Namespace), client.MatchingLabels(labels(cluster))); err != nil {
+		return 0, err
+	}
+	shardIndices := make(map[string]struct{})
+	for _, d := range deployments.Items {
+		if si, ok := d.Labels[LabelShardIndex]; ok {
+			shardIndices[si] = struct{}{}
+		}
+	}
+	return len(shardIndices), nil
+}
+
+// upsertDeployments creates Deployments for one shard at a time, gated on
+// cluster health, so that the cluster reaches a stable state before more
+// shards are added.
+//
+// On each call it:
+//  1. Counts how many shards already have Deployments.
+//  2. Computes a targetShards value:
+//     - 0 deployed → create shard 0 (bootstrap).
+//     - N deployed, N < desired, cluster Ready → create shard N.
+//     - N deployed, N < desired, cluster not Ready → wait; return N.
+//     - N deployed == desired → no-op; return N.
+//  3. Ensures all (shard, nodeIndex) Deployments exist up to targetShards.
+//  4. Returns targetShards so callers can scope health checks and rebalancing
+//     to the currently-deployed topology rather than the final desired count.
+//
+// Each Deployment is named deterministically:
 //
 //	<cluster>-<N>-<M>
 //
 // where N is the shard index and M is the node index (0 = initial primary,
-// 1+ = replicas). Because the names are deterministic, the function is
-// idempotent: it tries to create each Deployment and silently ignores
-// AlreadyExists errors.
-//
-// For a 3-shard cluster with 2 replicas per shard, this produces 9 Deployments:
-//
-//	mycluster-0-0, mycluster-0-1, mycluster-0-2,
-//	mycluster-1-0, mycluster-1-1, mycluster-1-2,
-//	mycluster-2-0, mycluster-2-1, mycluster-2-2.
-func (r *ValkeyClusterReconciler) upsertDeployments(ctx context.Context, cluster *valkeyiov1alpha1.ValkeyCluster) error {
+// 1+ = replicas). The function is idempotent; AlreadyExists errors are ignored.
+func (r *ValkeyClusterReconciler) upsertDeployments(ctx context.Context, cluster *valkeyiov1alpha1.ValkeyCluster) (int, error) {
 	log := logf.FromContext(ctx)
+
+	existingShards, err := r.countDeployedShards(ctx, cluster)
+	if err != nil {
+		return 0, err
+	}
+
+	desiredShards := int(cluster.Spec.Shards)
+
+	// Determine how many shards to target this reconcile pass.
+	targetShards := existingShards
+	switch {
+	case existingShards == 0:
+		// Bootstrap: create the very first shard unconditionally.
+		targetShards = 1
+	case existingShards < desiredShards:
+		// Only advance to the next shard once the cluster is healthy.
+		if cluster.Status.State == valkeyiov1alpha1.ClusterStateReady {
+			targetShards = existingShards + 1
+			log.V(1).Info("cluster is Ready; advancing to next shard", "from", existingShards, "to", targetShards)
+		} else {
+			log.V(1).Info("waiting for cluster to be Ready before creating next shard", "existingShards", existingShards, "desiredShards", desiredShards)
+		}
+	}
 
 	nodesPerShard := 1 + int(cluster.Spec.Replicas)
 	created := 0
-	expected := int(cluster.Spec.Shards) * nodesPerShard
-	for shard := range int(cluster.Spec.Shards) {
+	expected := targetShards * nodesPerShard
+	for shard := range targetShards {
 		for ni := range nodesPerShard {
 			if err := r.ensureDeployment(ctx, cluster, shard, ni, expected, &created); err != nil {
-				return err
+				return targetShards, err
 			}
 		}
 	}
@@ -434,7 +484,7 @@ func (r *ValkeyClusterReconciler) upsertDeployments(ctx context.Context, cluster
 
 	// TODO: update existing Deployments when the spec changes (e.g. image upgrade).
 
-	return nil
+	return targetShards, nil
 }
 
 // ensureDeployment creates a single Deployment if it doesn't already exist.
@@ -556,9 +606,15 @@ func (r *ValkeyClusterReconciler) meetIsolatedNodes(ctx context.Context, cluster
 // returns 0 — new primaries stay in PendingNodes for the rebalancer to handle.
 // Isolated nodes (cluster_known_nodes <= 1) are skipped; they must be MEET'd
 // first in Phase 1.
-func (r *ValkeyClusterReconciler) assignSlotsToPendingPrimaries(ctx context.Context, cluster *valkeyiov1alpha1.ValkeyCluster, state *valkey.ClusterState, pods *corev1.PodList) (int, error) {
+//
+// targetShards is the number of shards that have been deployed this reconcile
+// pass (not the final desired count). Slot ranges are divided across this
+// number so that each shard receives an equal share of the 16384 hash slots
+// at the time of initial assignment. Subsequent scale-out redistributes slots
+// via rebalancing once new shards are added one at a time.
+func (r *ValkeyClusterReconciler) assignSlotsToPendingPrimaries(ctx context.Context, cluster *valkeyiov1alpha1.ValkeyCluster, state *valkey.ClusterState, pods *corev1.PodList, targetShards int) (int, error) {
 	log := logf.FromContext(ctx)
-	shardsRequired := int(cluster.Spec.Shards)
+	shardsRequired := targetShards
 
 	// Collect primary pending nodes (node index 0 = primary), skipping:
 	//  - isolated nodes (cluster_known_nodes <= 1): they haven't been
@@ -820,8 +876,13 @@ func (r *ValkeyClusterReconciler) countReadyShards(state *valkey.ClusterState, c
 
 const rebalanceSlotBatchSize = 400
 
-func (r *ValkeyClusterReconciler) rebalanceSlots(ctx context.Context, cluster *valkeyiov1alpha1.ValkeyCluster, shards []*valkey.ShardState) (bool, error) {
-	move, err := valkey.PlanRebalanceMove(shards, int(cluster.Spec.Shards), rebalanceSlotBatchSize)
+// rebalanceSlots plans and executes a single incremental slot migration to
+// balance the cluster. targetShards is the number of shards that have been
+// deployed this reconcile pass; it is passed to PlanRebalanceMove so that
+// slot targets are computed against the currently-deployed topology rather
+// than the final desired shard count.
+func (r *ValkeyClusterReconciler) rebalanceSlots(ctx context.Context, cluster *valkeyiov1alpha1.ValkeyCluster, shards []*valkey.ShardState, targetShards int) (bool, error) {
+	move, err := valkey.PlanRebalanceMove(shards, targetShards, rebalanceSlotBatchSize)
 	if err != nil {
 		return false, err
 	}

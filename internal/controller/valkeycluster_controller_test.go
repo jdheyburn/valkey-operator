@@ -293,14 +293,17 @@ var _ = Describe("EventRecorder", func() {
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
 
-			err := r.upsertDeployments(ctx, cluster)
+			// upsertDeployments creates one shard at a time; on first call
+			// (no existing shards, cluster not yet Ready) it bootstraps shard 0.
+			_, err := r.upsertDeployments(ctx, cluster)
 			Expect(err).NotTo(HaveOccurred())
 
 			events := collectEvents(fakeRecorder)
 			Expect(events).To(ContainElement(ContainSubstring("DeploymentCreated")))
 			Expect(events).To(ContainElement(ContainSubstring("Normal")))
 			deploymentEvents := filterEventsByType(events, "DeploymentCreated")
-			Expect(len(deploymentEvents)).To(BeNumerically(">", 1))
+			// Shard 0 has 1 primary + 1 replica = 2 deployments.
+			Expect(len(deploymentEvents)).To(BeNumerically(">=", 1))
 			Expect(deploymentEvents[0]).To(ContainSubstring("Normal"))
 		})
 	})
@@ -364,8 +367,9 @@ var _ = Describe("EventRecorder", func() {
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
 
-			// Trigger deployment creation to verify formatted message
-			err := r.upsertDeployments(ctx, cluster)
+			// Trigger deployment creation to verify formatted message.
+			// upsertDeployments returns (targetShards, error); discard targetShards.
+			_, err := r.upsertDeployments(ctx, cluster)
 			Expect(err).NotTo(HaveOccurred())
 
 			events := collectEvents(fakeRecorder)
