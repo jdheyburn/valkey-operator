@@ -103,6 +103,32 @@ func GetClusterState(ctx context.Context, addresses []string, port int) *Cluster
 			}
 		}
 	}
+
+	// Post-processing: merge slot-less primaries from PendingNodes into their
+	// replicas' shards. This situation arises when a replica was attached
+	// (CLUSTER REPLICATE) before the primary received any slots — e.g. during
+	// scale-out when the rebalancer subsequently fails and the next reconcile
+	// refreshes state. Without the merge, the primary sits in PendingNodes
+	// while a shard entry (created by the replica) exists in state.Shards with
+	// no PrimaryId, causing phantom shards and double-counting in
+	// effectiveShards.
+	//
+	// A pending node is merged when a Shards entry with the same ShardId
+	// already exists (the replica was processed first). Merged nodes are
+	// removed from PendingNodes so that assignSlotsToPendingPrimaries and
+	// effectiveShards do not double-count them.
+	var remaining []*NodeState
+	for _, pending := range state.PendingNodes {
+		idx := slices.IndexFunc(state.Shards, func(s *ShardState) bool { return s.Id == pending.ShardId })
+		if idx >= 0 {
+			state.Shards[idx].Nodes = append(state.Shards[idx].Nodes, pending)
+			state.Shards[idx].PrimaryId = pending.Id
+		} else {
+			remaining = append(remaining, pending)
+		}
+	}
+	state.PendingNodes = remaining
+
 	return &state
 }
 

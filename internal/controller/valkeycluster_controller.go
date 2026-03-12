@@ -192,9 +192,18 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// --- Phase 3: REPLICATE all replica-labeled pending nodes ---
-	// By this point all currently known primaries have slots and appear in state.Shards.
-	// CLUSTER REPLICATE for different replicas targets different primaries,
-	// so they can all be issued in one pass.
+	// Normally all known primaries have slots and appear in state.Shards by
+	// this point. During scale-out, however, the new primary is slot-less
+	// (all 16384 slots are already assigned to existing shards) and lives in
+	// state.PendingNodes. findShardPrimary will locate it via its pod label
+	// (node-index=0), so CLUSTER REPLICATE succeeds before any slots are
+	// migrated to the new primary.
+	//
+	// When replicas are attached AND there are no unassigned slots (scale-out),
+	// we do NOT requeue here. Instead we fall through to the rebalancer so
+	// that the replica is already connected when the first batch of slots is
+	// migrated. If unassigned slots remain (initial bootstrap), we requeue as
+	// usual so Phase 2 can assign them on the next reconcile.
 	if len(state.PendingNodes) > 0 {
 		replicated, err := r.replicatePendingReplicas(ctx, cluster, state, pods)
 		if err != nil {
@@ -207,7 +216,12 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			setCondition(cluster, valkeyiov1alpha1.ConditionProgressing, valkeyiov1alpha1.ReasonAddingNodes, "Attaching replicas", metav1.ConditionTrue)
 			setCondition(cluster, valkeyiov1alpha1.ConditionReady, valkeyiov1alpha1.ReasonReconciling, "Cluster is Reconciling", metav1.ConditionFalse)
 			_ = r.updateStatus(ctx, cluster, state)
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			// During scale-out all slots are already assigned, so we fall
+			// through to the rebalancer without requeuing. The replica is
+			// already attached when MigrateSlotsAtomic runs.
+			if len(state.GetUnassignedSlots()) > 0 {
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
 		}
 	}
 

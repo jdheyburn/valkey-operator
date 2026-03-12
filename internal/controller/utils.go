@@ -172,12 +172,22 @@ func shardExistsInTopology(state *valkey.ClusterState, shardIndex int, pods *cor
 }
 
 // findShardPrimary scans all pods with the given shard-index label and returns
-// the Valkey node ID + IP of whichever pod is currently the slot-bearing
-// primary, regardless of its node-index label. This handles the post-failover
+// the Valkey node ID + IP of whichever pod is currently the primary for that
+// shard, regardless of its node-index label. This handles the post-failover
 // case where node-index=1 (or higher) was promoted by Valkey.
+//
+// It first searches state.Shards for a slot-bearing primary (the normal case
+// and the post-failover case). If no such primary is found, it falls back to
+// state.PendingNodes and looks for a node whose pod has the matching
+// shard-index and node-index=0 labels. This fallback covers the scale-out
+// case where a new shard's primary hasn't received slots yet but needs a
+// replica attached before slot migration begins.
+//
 // Returns ("", "") if no primary is found.
 func findShardPrimary(state *valkey.ClusterState, shardIndex int, pods *corev1.PodList) (nodeID, ip string) {
 	si := strconv.Itoa(shardIndex)
+
+	// First: search state.Shards for a slot-bearing primary (normal + post-failover).
 	for i := range pods.Items {
 		p := &pods.Items[i]
 		if p.Labels[LabelShardIndex] != si || p.Status.PodIP == "" {
@@ -193,6 +203,24 @@ func findShardPrimary(state *valkey.ClusterState, shardIndex int, pods *corev1.P
 			}
 		}
 	}
+
+	// Fallback: search state.PendingNodes for a slot-less primary matching
+	// node-index=0 (the intended initial primary). This is only reached during
+	// scale-out when Phase 2 (assign slots) is a no-op and Phase 3 (replicate)
+	// needs to attach the replica before the rebalancer migrates the first
+	// batch of slots.
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.Labels[LabelShardIndex] != si || p.Labels[LabelNodeIndex] != "0" || p.Status.PodIP == "" {
+			continue
+		}
+		for _, node := range state.PendingNodes {
+			if node.Address == p.Status.PodIP {
+				return node.Id, p.Status.PodIP
+			}
+		}
+	}
+
 	return "", ""
 }
 
