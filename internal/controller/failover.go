@@ -35,40 +35,31 @@ const (
 	proactiveFailoverPoll    = 1 * time.Second
 )
 
-// shouldFailoverBeforeUpdate returns true if the node at the given address is a
-// primary with at least one synced replica, meaning we should perform a graceful
-// failover before updating it.
-func shouldFailoverBeforeUpdate(state *valkey.ClusterState, address string) bool {
+// findFailoverShard returns the shard if the node at address is a primary with
+// at least one synced replica (meaning a graceful failover should be attempted
+// before updating it), or nil if no failover is needed.
+func findFailoverShard(state *valkey.ClusterState, address string) *valkey.ShardState {
 	shard := state.FindShardForAddress(address)
 	if shard == nil {
-		return false
+		return nil
 	}
-	// Check if the node at this address is the primary.
 	primary := shard.GetPrimaryNode()
 	if primary == nil || primary.Address != address {
-		return false
+		return nil
 	}
-	// Only failover if there is at least one synced replica to promote.
-	return len(shard.GetSyncedReplicas()) > 0
+	if len(shard.GetSyncedReplicas()) == 0 {
+		return nil
+	}
+	return shard
 }
 
-// proactiveFailover issues CLUSTER FAILOVER to the best synced replica in the
-// shard containing the given address, then polls until the replica reports
-// role:master or the timeout is reached.
-func proactiveFailover(ctx context.Context, recorder events.EventRecorder, cluster *valkeyiov1alpha1.ValkeyCluster, state *valkey.ClusterState, address string) error {
+// proactiveFailover issues CLUSTER FAILOVER to the best synced replica in shard,
+// then polls until the replica reports role:master or the timeout is reached.
+// shard must be non-nil and have at least one synced replica.
+func proactiveFailover(ctx context.Context, recorder events.EventRecorder, cluster *valkeyiov1alpha1.ValkeyCluster, shard *valkey.ShardState, address string) error {
 	log := logf.FromContext(ctx)
 
-	shard := state.FindShardForAddress(address)
-	if shard == nil {
-		recorder.Eventf(cluster, nil, corev1.EventTypeWarning, "FailoverSkipped", "ProactiveFailover", "No shard found for address %s", address)
-		return fmt.Errorf("no shard found for address %s", address)
-	}
-
 	replicas := shard.GetSyncedReplicas()
-	if len(replicas) == 0 {
-		recorder.Eventf(cluster, nil, corev1.EventTypeWarning, "FailoverSkipped", "ProactiveFailover", "No synced replicas available for failover in shard %s", shard.Id)
-		return fmt.Errorf("no synced replicas in shard %s", shard.Id)
-	}
 
 	// Pick the first synced replica as the failover target. The ordering is
 	// determined by node discovery order — no priority scheme is applied yet.

@@ -25,8 +25,8 @@ import (
 )
 
 
-func TestShouldFailoverBeforeUpdate(t *testing.T) {
-	t.Run("primary with synced replica", func(t *testing.T) {
+func TestFindFailoverShard(t *testing.T) {
+	t.Run("primary with synced replica returns shard", func(t *testing.T) {
 		state := &valkey.ClusterState{
 			Shards: []*valkey.ShardState{
 				{
@@ -39,10 +39,10 @@ func TestShouldFailoverBeforeUpdate(t *testing.T) {
 				},
 			},
 		}
-		assert.True(t, shouldFailoverBeforeUpdate(state, "10.0.0.1"))
+		assert.NotNil(t, findFailoverShard(state, "10.0.0.1"))
 	})
 
-	t.Run("replica address - should not failover", func(t *testing.T) {
+	t.Run("replica address returns nil", func(t *testing.T) {
 		state := &valkey.ClusterState{
 			Shards: []*valkey.ShardState{
 				{
@@ -55,10 +55,10 @@ func TestShouldFailoverBeforeUpdate(t *testing.T) {
 				},
 			},
 		}
-		assert.False(t, shouldFailoverBeforeUpdate(state, "10.0.0.2"))
+		assert.Nil(t, findFailoverShard(state, "10.0.0.2"))
 	})
 
-	t.Run("primary with no replicas", func(t *testing.T) {
+	t.Run("primary with no replicas returns nil", func(t *testing.T) {
 		state := &valkey.ClusterState{
 			Shards: []*valkey.ShardState{
 				{
@@ -70,10 +70,10 @@ func TestShouldFailoverBeforeUpdate(t *testing.T) {
 				},
 			},
 		}
-		assert.False(t, shouldFailoverBeforeUpdate(state, "10.0.0.1"))
+		assert.Nil(t, findFailoverShard(state, "10.0.0.1"))
 	})
 
-	t.Run("primary with unsynced replica", func(t *testing.T) {
+	t.Run("primary with unsynced replica returns nil", func(t *testing.T) {
 		state := &valkey.ClusterState{
 			Shards: []*valkey.ShardState{
 				{
@@ -86,10 +86,10 @@ func TestShouldFailoverBeforeUpdate(t *testing.T) {
 				},
 			},
 		}
-		assert.False(t, shouldFailoverBeforeUpdate(state, "10.0.0.1"))
+		assert.Nil(t, findFailoverShard(state, "10.0.0.1"))
 	})
 
-	t.Run("unknown address", func(t *testing.T) {
+	t.Run("unknown address returns nil", func(t *testing.T) {
 		state := &valkey.ClusterState{
 			Shards: []*valkey.ShardState{
 				{
@@ -101,7 +101,7 @@ func TestShouldFailoverBeforeUpdate(t *testing.T) {
 				},
 			},
 		}
-		assert.False(t, shouldFailoverBeforeUpdate(state, "10.0.0.99"))
+		assert.Nil(t, findFailoverShard(state, "10.0.0.99"))
 	})
 }
 

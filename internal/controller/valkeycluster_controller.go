@@ -480,12 +480,14 @@ func (r *ValkeyClusterReconciler) reconcileValkeyNode(ctx context.Context, clust
 				log.V(1).Info("could not fetch current ValkeyNode for failover check, skipping",
 					"name", node.Name, "err", err)
 			}
-		} else if nodeRequiresRoll(current, desired) && shouldFailoverBeforeUpdate(clusterState, current.Status.PodIP) {
-			log.Info("proactive failover before rolling primary",
-				"name", node.Name, "address", current.Status.PodIP)
-			if err := proactiveFailover(ctx, r.Recorder, cluster, clusterState, current.Status.PodIP); err != nil {
-				log.Info("proactive failover did not complete, proceeding with roll",
-					"name", node.Name, "err", err)
+		} else if nodeRequiresRoll(current, desired) {
+			if shard := findFailoverShard(clusterState, current.Status.PodIP); shard != nil {
+				log.Info("proactive failover before rolling primary",
+					"name", node.Name, "address", current.Status.PodIP)
+				if err := proactiveFailover(ctx, r.Recorder, cluster, shard, current.Status.PodIP); err != nil {
+					log.Info("proactive failover did not complete, proceeding with roll",
+						"name", node.Name, "err", err)
+				}
 			}
 		}
 	}
