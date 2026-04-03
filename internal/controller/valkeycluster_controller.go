@@ -28,6 +28,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -465,40 +466,54 @@ func (r *ValkeyClusterReconciler) reconcileValkeyNode(ctx context.Context, clust
 	log := logf.FromContext(ctx)
 
 	desired := buildClusterValkeyNode(cluster, shardIndex, nodeIndex)
-	node := &valkeyiov1alpha1.ValkeyNode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      desired.Name,
-			Namespace: desired.Namespace,
-		},
+
+	// Fetch the current node once. This single Get serves both the proactive
+	// failover check and the create-or-update decision, avoiding a second
+	// API call inside controllerutil.CreateOrUpdate.
+	node := &valkeyiov1alpha1.ValkeyNode{}
+	getErr := r.Get(ctx, client.ObjectKey{Name: desired.Name, Namespace: desired.Namespace}, node)
+	notFound := apierrors.IsNotFound(getErr)
+	if getErr != nil && !notFound {
+		return false, false, getErr
 	}
 
-	// Check if proactive failover is needed before updating.
-	if clusterState != nil {
-		current := &valkeyiov1alpha1.ValkeyNode{}
-		if err := r.Get(ctx, client.ObjectKeyFromObject(node), current); err != nil {
-			if !apierrors.IsNotFound(err) {
-				log.V(1).Info("could not fetch current ValkeyNode for failover check, skipping",
-					"name", node.Name, "err", err)
-			}
-		} else if nodeRequiresRoll(current, desired) && shouldFailoverBeforeUpdate(clusterState, current.Status.PodIP) {
-			log.Info("proactive failover before rolling primary",
-				"name", node.Name, "address", current.Status.PodIP)
-			if err := proactiveFailover(ctx, r.Recorder, cluster, clusterState, current.Status.PodIP); err != nil {
-				log.Info("proactive failover did not complete, proceeding with roll",
-					"name", node.Name, "err", err)
-			}
+	if !notFound && clusterState != nil && nodeRequiresRoll(node, desired) && shouldFailoverBeforeUpdate(clusterState, node.Status.PodIP) {
+		log.Info("proactive failover before rolling primary",
+			"name", node.Name, "address", node.Status.PodIP)
+		if err := proactiveFailover(ctx, r.Recorder, cluster, clusterState, node.Status.PodIP); err != nil {
+			log.Info("proactive failover did not complete, proceeding with roll",
+				"name", node.Name, "err", err)
 		}
 	}
 
-	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, node, func() error {
-		node.Labels = desired.Labels
-		node.Spec = desired.Spec
-		return controllerutil.SetControllerReference(cluster, node, r.Scheme)
-	})
-	if err != nil {
-		r.Recorder.Eventf(cluster, node, corev1.EventTypeWarning, "ValkeyNodeFailed", "ReconcileValkeyNode", "Failed to reconcile ValkeyNode: %v", err)
+	// Apply desired state, tracking what existed before the mutate so we can
+	// decide whether an Update call is necessary (mirrors CreateOrUpdate logic).
+	existing := node.DeepCopy()
+	node.Name = desired.Name
+	node.Namespace = desired.Namespace
+	node.Labels = desired.Labels
+	node.Spec = desired.Spec
+	if err := controllerutil.SetControllerReference(cluster, node, r.Scheme); err != nil {
 		return false, false, err
 	}
+
+	var result controllerutil.OperationResult
+	if notFound {
+		if err := r.Create(ctx, node); err != nil {
+			r.Recorder.Eventf(cluster, node, corev1.EventTypeWarning, "ValkeyNodeFailed", "ReconcileValkeyNode", "Failed to reconcile ValkeyNode: %v", err)
+			return false, false, err
+		}
+		result = controllerutil.OperationResultCreated
+	} else if equality.Semantic.DeepEqual(existing, node) {
+		result = controllerutil.OperationResultNone
+	} else {
+		if err := r.Update(ctx, node); err != nil {
+			r.Recorder.Eventf(cluster, node, corev1.EventTypeWarning, "ValkeyNodeFailed", "ReconcileValkeyNode", "Failed to reconcile ValkeyNode: %v", err)
+			return false, false, err
+		}
+		result = controllerutil.OperationResultUpdated
+	}
+
 	switch result {
 	case controllerutil.OperationResultCreated:
 		r.Recorder.Eventf(cluster, node, corev1.EventTypeNormal, "ValkeyNodeCreated", "CreateValkeyNode", "Created ValkeyNode for shard %d node %d", shardIndex, nodeIndex)
@@ -526,8 +541,6 @@ func (r *ValkeyClusterReconciler) reconcileValkeyNode(ctx context.Context, clust
 			log.V(1).Info("ValkeyNode not yet ready, waiting", "name", node.Name)
 			return true, false, nil
 		}
-	default:
-		log.V(1).Info("unexpected CreateOrUpdate result", "result", result, "name", node.Name)
 	}
 	return false, false, nil
 }
