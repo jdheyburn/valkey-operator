@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -125,67 +124,6 @@ func proactiveFailover(ctx context.Context, recorder events.EventRecorder, clust
 				return nil
 			}
 		}
-	}
-}
-
-// countTotalMasters returns the number of shards (each shard has one master).
-func countTotalMasters(state *valkey.ClusterState) int {
-	return len(state.Shards)
-}
-
-// shouldTakeover returns (true, reason) if a CLUSTER FAILOVER TAKEOVER should
-// be issued for the given shard. This is needed when the primary has fail/pfail
-// flags and the cluster lacks enough masters for quorum-based failover.
-func shouldTakeover(state *valkey.ClusterState, shard *valkey.ShardState) (bool, string) {
-	primary := shard.GetPrimaryNode()
-	if primary == nil {
-		return false, ""
-	}
-	// Check if the primary is failing.
-	isFailing := slices.Contains(primary.Flags, "fail") || slices.Contains(primary.Flags, "pfail")
-	if !isFailing {
-		return false, ""
-	}
-	// Quorum-based failover requires a majority of masters. With fewer than 3
-	// masters the cluster cannot form a majority, so TAKEOVER is needed.
-	// NOTE: This heuristic counts total masters, not healthy ones. It does not
-	// handle simultaneous multi-primary failures (e.g. 5 shards, 3 down).
-	// That scenario can be addressed in a follow-up iteration.
-	if countTotalMasters(state) < 3 {
-		return true, "InsufficientQuorum"
-	}
-	return false, ""
-}
-
-// reactiveFailover scans all shards for failed primaries and issues
-// CLUSTER FAILOVER TAKEOVER when shouldTakeover returns true and synced
-// replicas exist.
-func reactiveFailover(ctx context.Context, recorder events.EventRecorder, cluster *valkeyiov1alpha1.ValkeyCluster, state *valkey.ClusterState) {
-	log := logf.FromContext(ctx)
-
-	for _, shard := range state.Shards {
-		ok, reason := shouldTakeover(state, shard)
-		if !ok {
-			continue
-		}
-
-		replicas := shard.GetSyncedReplicas()
-		if len(replicas) == 0 {
-			log.Info("reactive failover: no synced replicas available", "shard", shard.Id, "reason", reason)
-			continue
-		}
-
-		target := replicas[0]
-		log.Info("issuing CLUSTER FAILOVER TAKEOVER", "shard", shard.Id, "target", target.Address, "reason", reason)
-
-		err := target.Client.Do(ctx, target.Client.B().ClusterFailover().Takeover().Build()).Error()
-		if err != nil {
-			recorder.Eventf(cluster, nil, corev1.EventTypeWarning, "FailoverFailed", "ReactiveFailover", "CLUSTER FAILOVER TAKEOVER failed on %s: %v", target.Address, err)
-			log.Error(err, "CLUSTER FAILOVER TAKEOVER failed", "target", target.Address, "shard", shard.Id)
-			continue
-		}
-
-		recorder.Eventf(cluster, nil, corev1.EventTypeNormal, "FailoverInitiated", "ReactiveFailover", "Issued TAKEOVER to %s in shard %s (reason: %s)", target.Address, shard.Id, reason)
 	}
 }
 
