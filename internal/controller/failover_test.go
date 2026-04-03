@@ -24,7 +24,6 @@ import (
 	"valkey.io/valkey-operator/internal/valkey"
 )
 
-
 func TestFindFailoverShard(t *testing.T) {
 	t.Run("primary with synced replica returns shard", func(t *testing.T) {
 		state := &valkey.ClusterState{
