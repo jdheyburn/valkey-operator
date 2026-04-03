@@ -138,6 +138,19 @@ func (s *ClusterState) GetUnassignedSlots() []SlotsRange {
 	return remaining
 }
 
+// FindShardForAddress returns the shard containing a node with the given IP
+// address, or nil if no shard contains that address.
+func (s *ClusterState) FindShardForAddress(address string) *ShardState {
+	for _, shard := range s.Shards {
+		for _, node := range shard.Nodes {
+			if node.Address == address {
+				return shard
+			}
+		}
+	}
+	return nil
+}
+
 // GetPrimaryNode returns the primary NodeState object
 func (s *ShardState) GetPrimaryNode() *NodeState {
 	idx := slices.IndexFunc(s.Nodes, func(n *NodeState) bool { return n.Id == s.PrimaryId })

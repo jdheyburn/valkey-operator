@@ -35,24 +35,11 @@ const (
 	proactiveFailoverPoll    = 1 * time.Second
 )
 
-// findShardForAddress returns the shard containing a node with the given IP address,
-// or nil if no shard contains that address.
-func findShardForAddress(state *valkey.ClusterState, address string) *valkey.ShardState {
-	for _, shard := range state.Shards {
-		for _, node := range shard.Nodes {
-			if node.Address == address {
-				return shard
-			}
-		}
-	}
-	return nil
-}
-
 // shouldFailoverBeforeUpdate returns true if the node at the given address is a
 // primary with at least one synced replica, meaning we should perform a graceful
 // failover before updating it.
 func shouldFailoverBeforeUpdate(state *valkey.ClusterState, address string) bool {
-	shard := findShardForAddress(state, address)
+	shard := state.FindShardForAddress(address)
 	if shard == nil {
 		return false
 	}
@@ -71,7 +58,7 @@ func shouldFailoverBeforeUpdate(state *valkey.ClusterState, address string) bool
 func proactiveFailover(ctx context.Context, recorder events.EventRecorder, cluster *valkeyiov1alpha1.ValkeyCluster, state *valkey.ClusterState, address string) error {
 	log := logf.FromContext(ctx)
 
-	shard := findShardForAddress(state, address)
+	shard := state.FindShardForAddress(address)
 	if shard == nil {
 		recorder.Eventf(cluster, nil, corev1.EventTypeWarning, "FailoverSkipped", "ProactiveFailover", "No shard found for address %s", address)
 		return fmt.Errorf("no shard found for address %s", address)

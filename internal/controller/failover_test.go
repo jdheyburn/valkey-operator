@@ -24,50 +24,6 @@ import (
 	"valkey.io/valkey-operator/internal/valkey"
 )
 
-func TestFindShardForAddress(t *testing.T) {
-	state := &valkey.ClusterState{
-		Shards: []*valkey.ShardState{
-			{
-				Id:        "shard-1",
-				PrimaryId: "node-1",
-				Nodes: []*valkey.NodeState{
-					{Address: "10.0.0.1", Id: "node-1", Flags: []string{"master", "myself"}},
-					{Address: "10.0.0.2", Id: "node-2", Flags: []string{"slave"}},
-				},
-			},
-			{
-				Id:        "shard-2",
-				PrimaryId: "node-3",
-				Nodes: []*valkey.NodeState{
-					{Address: "10.0.0.3", Id: "node-3", Flags: []string{"master"}},
-				},
-			},
-		},
-	}
-
-	t.Run("found in first shard", func(t *testing.T) {
-		shard := findShardForAddress(state, "10.0.0.1")
-		assert.NotNil(t, shard)
-		assert.Equal(t, "shard-1", shard.Id)
-	})
-
-	t.Run("found replica in first shard", func(t *testing.T) {
-		shard := findShardForAddress(state, "10.0.0.2")
-		assert.NotNil(t, shard)
-		assert.Equal(t, "shard-1", shard.Id)
-	})
-
-	t.Run("found in second shard", func(t *testing.T) {
-		shard := findShardForAddress(state, "10.0.0.3")
-		assert.NotNil(t, shard)
-		assert.Equal(t, "shard-2", shard.Id)
-	})
-
-	t.Run("not found", func(t *testing.T) {
-		shard := findShardForAddress(state, "10.0.0.99")
-		assert.Nil(t, shard)
-	})
-}
 
 func TestShouldFailoverBeforeUpdate(t *testing.T) {
 	t.Run("primary with synced replica", func(t *testing.T) {

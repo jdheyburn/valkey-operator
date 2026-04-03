@@ -115,6 +115,56 @@ func TestSubtractSlotsRange(t *testing.T) {
 	}
 }
 
+func TestClusterState_FindShardForAddress(t *testing.T) {
+	state := &ClusterState{
+		Shards: []*ShardState{
+			{
+				Id:        "shard-1",
+				PrimaryId: "node-1",
+				Nodes: []*NodeState{
+					{Address: "10.0.0.1", Id: "node-1", Flags: []string{"master", "myself"}},
+					{Address: "10.0.0.2", Id: "node-2", Flags: []string{"slave"}},
+				},
+			},
+			{
+				Id:        "shard-2",
+				PrimaryId: "node-3",
+				Nodes: []*NodeState{
+					{Address: "10.0.0.3", Id: "node-3", Flags: []string{"master"}},
+				},
+			},
+		},
+	}
+
+	t.Run("found in first shard", func(t *testing.T) {
+		shard := state.FindShardForAddress("10.0.0.1")
+		if shard == nil || shard.Id != "shard-1" {
+			t.Errorf("expected shard-1, got %v", shard)
+		}
+	})
+
+	t.Run("found replica in first shard", func(t *testing.T) {
+		shard := state.FindShardForAddress("10.0.0.2")
+		if shard == nil || shard.Id != "shard-1" {
+			t.Errorf("expected shard-1, got %v", shard)
+		}
+	})
+
+	t.Run("found in second shard", func(t *testing.T) {
+		shard := state.FindShardForAddress("10.0.0.3")
+		if shard == nil || shard.Id != "shard-2" {
+			t.Errorf("expected shard-2, got %v", shard)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		shard := state.FindShardForAddress("10.0.0.99")
+		if shard != nil {
+			t.Errorf("expected nil, got %v", shard)
+		}
+	})
+}
+
 func TestShardState_GetSyncedReplicas(t *testing.T) {
 	primary := &NodeState{
 		Id:      "primary-id",
