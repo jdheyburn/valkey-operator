@@ -127,7 +127,9 @@ func proactiveFailover(ctx context.Context, recorder events.EventRecorder, clust
 	}
 }
 
-// specEqual returns true if two ValkeyNodeSpec values are deeply equal.
-func specEqual(a, b valkeyiov1alpha1.ValkeyNodeSpec) bool {
-	return reflect.DeepEqual(a, b)
+// nodeRequiresRoll returns true if the current ValkeyNode has a running pod
+// whose spec differs from the desired spec, meaning CreateOrUpdate will
+// trigger a pod roll.
+func nodeRequiresRoll(current *valkeyiov1alpha1.ValkeyNode, desired *valkeyiov1alpha1.ValkeyNode) bool {
+	return current.Status.PodIP != "" && !reflect.DeepEqual(current.Spec, desired.Spec)
 }

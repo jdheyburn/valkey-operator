@@ -149,23 +149,30 @@ func TestShouldFailoverBeforeUpdate(t *testing.T) {
 	})
 }
 
-func TestSpecEqual(t *testing.T) {
-	t.Run("identical specs", func(t *testing.T) {
-		a := valkeyiov1alpha1.ValkeyNodeSpec{Image: "valkey:8.1"}
-		b := valkeyiov1alpha1.ValkeyNodeSpec{Image: "valkey:8.1"}
-		assert.True(t, specEqual(a, b))
+func TestNodeRequiresRoll(t *testing.T) {
+	t.Run("different spec with pod IP requires roll", func(t *testing.T) {
+		current := &valkeyiov1alpha1.ValkeyNode{}
+		current.Spec.Image = "valkey:8.1"
+		current.Status.PodIP = "10.0.0.1"
+		desired := &valkeyiov1alpha1.ValkeyNode{}
+		desired.Spec.Image = "valkey:8.2"
+		assert.True(t, nodeRequiresRoll(current, desired))
 	})
 
-	t.Run("different image", func(t *testing.T) {
-		a := valkeyiov1alpha1.ValkeyNodeSpec{Image: "valkey:8.1"}
-		b := valkeyiov1alpha1.ValkeyNodeSpec{Image: "valkey:8.2"}
-		assert.False(t, specEqual(a, b))
+	t.Run("same spec does not require roll", func(t *testing.T) {
+		current := &valkeyiov1alpha1.ValkeyNode{}
+		current.Spec.Image = "valkey:8.1"
+		current.Status.PodIP = "10.0.0.1"
+		desired := &valkeyiov1alpha1.ValkeyNode{}
+		desired.Spec.Image = "valkey:8.1"
+		assert.False(t, nodeRequiresRoll(current, desired))
 	})
 
-	t.Run("zero values equal", func(t *testing.T) {
-		a := valkeyiov1alpha1.ValkeyNodeSpec{}
-		b := valkeyiov1alpha1.ValkeyNodeSpec{}
-		assert.True(t, specEqual(a, b))
+	t.Run("different spec but no pod IP does not require roll", func(t *testing.T) {
+		current := &valkeyiov1alpha1.ValkeyNode{}
+		current.Spec.Image = "valkey:8.1"
+		desired := &valkeyiov1alpha1.ValkeyNode{}
+		desired.Spec.Image = "valkey:8.2"
+		assert.False(t, nodeRequiresRoll(current, desired))
 	})
 }
-
