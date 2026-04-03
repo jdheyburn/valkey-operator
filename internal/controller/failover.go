@@ -78,13 +78,14 @@ func proactiveFailover(ctx context.Context, recorder events.EventRecorder, clust
 	}
 
 	// Poll until the replica reports role:master or timeout.
-	deadline := time.After(proactiveFailoverTimeout)
+	timer := time.NewTimer(proactiveFailoverTimeout)
+	defer timer.Stop()
 	ticker := time.NewTicker(proactiveFailoverPoll)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-deadline:
+		case <-timer.C:
 			recorder.Eventf(cluster, nil, corev1.EventTypeWarning, "FailoverTimeout", "ProactiveFailover", "Failover to %s in shard %s did not complete within %s", target.Address, shard.Id, proactiveFailoverTimeout)
 			return fmt.Errorf("failover to %s timed out after %s", target.Address, proactiveFailoverTimeout)
 		case <-ctx.Done():
