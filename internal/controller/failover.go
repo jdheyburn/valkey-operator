@@ -133,3 +133,23 @@ func proactiveFailover(ctx context.Context, recorder events.EventRecorder, clust
 func nodeRequiresRoll(current *valkeyiov1alpha1.ValkeyNode, desired *valkeyiov1alpha1.ValkeyNode) bool {
 	return current.Status.PodIP != "" && !reflect.DeepEqual(current.Spec, desired.Spec)
 }
+
+// anyNodeRequiresRoll returns true if any existing ValkeyNode in the list has
+// a spec diff against what the cluster would build for it. Used as a cheap
+// pre-flight check to avoid opening Valkey connections on steady-state reconciles.
+func anyNodeRequiresRoll(cluster *valkeyiov1alpha1.ValkeyCluster, nodeList *valkeyiov1alpha1.ValkeyNodeList) bool {
+	byName := make(map[string]*valkeyiov1alpha1.ValkeyNode, len(nodeList.Items))
+	for i := range nodeList.Items {
+		byName[nodeList.Items[i].Name] = &nodeList.Items[i]
+	}
+	nodesPerShard := 1 + int(cluster.Spec.Replicas)
+	for shardIndex := range int(cluster.Spec.Shards) {
+		for nodeIndex := range nodesPerShard {
+			desired := buildClusterValkeyNode(cluster, shardIndex, nodeIndex)
+			if current, ok := byName[desired.Name]; ok && nodeRequiresRoll(current, desired) {
+				return true
+			}
+		}
+	}
+	return false
+}

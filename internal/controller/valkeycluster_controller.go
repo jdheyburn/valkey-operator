@@ -420,17 +420,18 @@ func (r *ValkeyClusterReconciler) reconcileValkeyNodes(ctx context.Context, clus
 	nodesPerShard := 1 + int(cluster.Spec.Replicas)
 	totalCreated := 0
 
-	// Scrape cluster state once for proactive failover decisions.
-	// During initial bootstrap no nodes exist, so state stays nil.
-	// This snapshot is safe to reuse across the loop because nodes are
-	// iterated replicas-first (the primary is last in each shard), and
-	// after an update we requeue immediately, re-scraping fresh state.
+	// Scrape cluster state once for proactive failover decisions, but only
+	// when at least one node actually needs a roll. During initial bootstrap
+	// no nodes exist, so state stays nil. The snapshot is safe to reuse
+	// across the loop because nodes are iterated replicas-first (the primary
+	// is last in each shard), and after an update we requeue immediately,
+	// re-scraping fresh state.
 	nodeList := &valkeyiov1alpha1.ValkeyNodeList{}
 	if err := r.List(ctx, nodeList, client.InNamespace(cluster.Namespace), client.MatchingLabels(map[string]string{LabelCluster: cluster.Name})); err != nil {
 		return false, err
 	}
 	var clusterState *valkey.ClusterState
-	if len(nodeList.Items) > 0 {
+	if anyNodeRequiresRoll(cluster, nodeList) {
 		clusterState = r.getValkeyClusterState(ctx, nodeList)
 		defer clusterState.CloseClients()
 	}
