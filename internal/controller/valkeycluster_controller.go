@@ -404,8 +404,11 @@ aclfile /config/users/users.acl`,
 //	<cluster>-<N>-<M>
 //
 // where N is the shard index and M is the node index (0 = initial primary,
-// 1+ = replicas). It iterates shards in ascending order and nodes in descending order within each
-// shard (replicas before primary). At most one spec update is issued per reconcile.
+// 1+ = replicas). It iterates shards in ascending order and nodes
+// replicas-before-primary within each shard. When live cluster state is
+// available, the actual primary is determined from topology (handling
+// post-failover promotions); otherwise falls back to reverse-index order.
+// At most one spec update is issued per reconcile.
 // Once a node is updated or found not-ready after a prior update,
 // the function returns (true, nil) so the caller requeues before advancing to the next node.
 //
@@ -433,8 +436,10 @@ func (r *ValkeyClusterReconciler) reconcileValkeyNodes(ctx context.Context, clus
 	}
 
 	for shardIndex := range int(cluster.Spec.Shards) {
-		// Iterate nodeIndex in reverse order (replicas before primary)
-		for nodeIndex := nodesPerShard - 1; nodeIndex >= 0; nodeIndex-- {
+		// Iterate replicas before primary. When cluster state is available,
+		// the actual primary is determined from live topology (handles
+		// post-failover promotion). Otherwise falls back to reverse-index order.
+		for _, nodeIndex := range shardNodeOrder(cluster.Name, shardIndex, nodesPerShard, clusterState, nodes) {
 			requeue, nodeCreated, err := r.reconcileValkeyNode(ctx, cluster, shardIndex, nodeIndex, clusterState)
 			if err != nil {
 				return false, err

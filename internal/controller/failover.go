@@ -113,6 +113,55 @@ func nodeRequiresRoll(current *valkeyiov1alpha1.ValkeyNode, desired *valkeyiov1a
 	return current.Status.PodIP != "" && !reflect.DeepEqual(current.Spec, desired.Spec)
 }
 
+// shardNodeOrder returns nodeIndices for a shard ordered replicas-first,
+// primary-last. When clusterState is available, the actual primary is
+// determined from live cluster topology (handles post-failover scenarios where
+// a replica has been promoted). Otherwise falls back to reverse-index order
+// (assumes node-index 0 is primary).
+func shardNodeOrder(clusterName string, shardIndex, nodesPerShard int, clusterState *valkey.ClusterState, nodeList *valkeyiov1alpha1.ValkeyNodeList) []int {
+	// Build lookup from name to PodIP for this shard's nodes.
+	byName := make(map[string]string, nodesPerShard)
+	for i := range nodeList.Items {
+		byName[nodeList.Items[i].Name] = nodeList.Items[i].Status.PodIP
+	}
+
+	primaryIdx := -1
+	if clusterState != nil {
+		for nodeIndex := range nodesPerShard {
+			ip := byName[valkeyNodeName(clusterName, shardIndex, nodeIndex)]
+			if ip == "" {
+				continue
+			}
+			if shard := clusterState.FindShardForAddress(ip); shard != nil {
+				if primary := shard.GetPrimaryNode(); primary != nil && primary.Address == ip {
+					primaryIdx = nodeIndex
+					break
+				}
+			}
+		}
+	}
+
+	// Default reverse order when cluster state is unavailable or primary
+	// could not be identified.
+	if primaryIdx == -1 {
+		indices := make([]int, nodesPerShard)
+		for i := range nodesPerShard {
+			indices[i] = nodesPerShard - 1 - i
+		}
+		return indices
+	}
+
+	// Replicas first (reverse order among non-primary), then primary last.
+	indices := make([]int, 0, nodesPerShard)
+	for nodeIndex := nodesPerShard - 1; nodeIndex >= 0; nodeIndex-- {
+		if nodeIndex != primaryIdx {
+			indices = append(indices, nodeIndex)
+		}
+	}
+	indices = append(indices, primaryIdx)
+	return indices
+}
+
 // anyNodeRequiresRoll returns true if any existing ValkeyNode in the list has
 // a spec diff against what the cluster would build for it. Used as a cheap
 // pre-flight check to avoid opening Valkey connections on steady-state reconciles.

@@ -24,6 +24,128 @@ import (
 	"valkey.io/valkey-operator/internal/valkey"
 )
 
+func makeNodeList(clusterName string, shardIndex int, ips ...string) *valkeyiov1alpha1.ValkeyNodeList {
+	list := &valkeyiov1alpha1.ValkeyNodeList{}
+	for nodeIndex, ip := range ips {
+		node := valkeyiov1alpha1.ValkeyNode{}
+		node.Name = valkeyNodeName(clusterName, shardIndex, nodeIndex)
+		node.Status.PodIP = ip
+		list.Items = append(list.Items, node)
+	}
+	return list
+}
+
+func TestShardNodeOrder(t *testing.T) {
+	t.Run("nil cluster state falls back to reverse index order", func(t *testing.T) {
+		nodes := makeNodeList("test", 0, "10.0.0.1", "10.0.0.2", "10.0.0.3")
+		order := shardNodeOrder("test", 0, 3, nil, nodes)
+		assert.Equal(t, []int{2, 1, 0}, order)
+	})
+
+	t.Run("node-index 0 is primary (default topology)", func(t *testing.T) {
+		nodes := makeNodeList("test", 0, "10.0.0.1", "10.0.0.2", "10.0.0.3")
+		state := &valkey.ClusterState{
+			Shards: []*valkey.ShardState{
+				{
+					Id:        "shard-0",
+					PrimaryId: "node-1",
+					Nodes: []*valkey.NodeState{
+						{Address: "10.0.0.1", Id: "node-1", Flags: []string{"master"}},
+						{Address: "10.0.0.2", Id: "node-2", Flags: []string{"slave"}},
+						{Address: "10.0.0.3", Id: "node-3", Flags: []string{"slave"}},
+					},
+				},
+			},
+		}
+		order := shardNodeOrder("test", 0, 3, state, nodes)
+		// Replicas (2, 1) first, then primary (0) last
+		assert.Equal(t, []int{2, 1, 0}, order)
+	})
+
+	t.Run("node-index 1 is primary after failover", func(t *testing.T) {
+		nodes := makeNodeList("test", 0, "10.0.0.1", "10.0.0.2", "10.0.0.3")
+		state := &valkey.ClusterState{
+			Shards: []*valkey.ShardState{
+				{
+					Id:        "shard-0",
+					PrimaryId: "node-2",
+					Nodes: []*valkey.NodeState{
+						{Address: "10.0.0.1", Id: "node-1", Flags: []string{"slave"}},
+						{Address: "10.0.0.2", Id: "node-2", Flags: []string{"master"}},
+						{Address: "10.0.0.3", Id: "node-3", Flags: []string{"slave"}},
+					},
+				},
+			},
+		}
+		order := shardNodeOrder("test", 0, 3, state, nodes)
+		// Replicas (2, 0) first, then primary (1) last
+		assert.Equal(t, []int{2, 0, 1}, order)
+	})
+
+	t.Run("last node-index is primary after failover", func(t *testing.T) {
+		nodes := makeNodeList("test", 0, "10.0.0.1", "10.0.0.2", "10.0.0.3")
+		state := &valkey.ClusterState{
+			Shards: []*valkey.ShardState{
+				{
+					Id:        "shard-0",
+					PrimaryId: "node-3",
+					Nodes: []*valkey.NodeState{
+						{Address: "10.0.0.1", Id: "node-1", Flags: []string{"slave"}},
+						{Address: "10.0.0.2", Id: "node-2", Flags: []string{"slave"}},
+						{Address: "10.0.0.3", Id: "node-3", Flags: []string{"master"}},
+					},
+				},
+			},
+		}
+		order := shardNodeOrder("test", 0, 3, state, nodes)
+		// Replicas (1, 0) first, then primary (2) last
+		assert.Equal(t, []int{1, 0, 2}, order)
+	})
+
+	t.Run("single node shard returns just that node", func(t *testing.T) {
+		nodes := makeNodeList("test", 0, "10.0.0.1")
+		state := &valkey.ClusterState{
+			Shards: []*valkey.ShardState{
+				{
+					Id:        "shard-0",
+					PrimaryId: "node-1",
+					Nodes: []*valkey.NodeState{
+						{Address: "10.0.0.1", Id: "node-1", Flags: []string{"master"}},
+					},
+				},
+			},
+		}
+		order := shardNodeOrder("test", 0, 1, state, nodes)
+		assert.Equal(t, []int{0}, order)
+	})
+
+	t.Run("node IP not found in cluster state falls back to reverse order", func(t *testing.T) {
+		nodes := makeNodeList("test", 0, "10.0.0.1", "10.0.0.2")
+		state := &valkey.ClusterState{
+			Shards: []*valkey.ShardState{},
+		}
+		order := shardNodeOrder("test", 0, 2, state, nodes)
+		assert.Equal(t, []int{1, 0}, order)
+	})
+
+	t.Run("node without PodIP falls back to reverse order", func(t *testing.T) {
+		nodes := makeNodeList("test", 0, "", "", "")
+		state := &valkey.ClusterState{
+			Shards: []*valkey.ShardState{
+				{
+					Id:        "shard-0",
+					PrimaryId: "node-1",
+					Nodes: []*valkey.NodeState{
+						{Address: "10.0.0.1", Id: "node-1", Flags: []string{"master"}},
+					},
+				},
+			},
+		}
+		order := shardNodeOrder("test", 0, 3, state, nodes)
+		assert.Equal(t, []int{2, 1, 0}, order)
+	})
+}
+
 func TestFindFailoverShard(t *testing.T) {
 	t.Run("primary with synced replica returns shard", func(t *testing.T) {
 		state := &valkey.ClusterState{
