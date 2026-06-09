@@ -465,6 +465,14 @@ func buildValkeyNodeStatefulSet(node *valkeyiov1alpha1.ValkeyNode) (*appsv1.Stat
 	if err != nil {
 		return nil, err
 	}
+	// When the node belongs to a ValkeyCluster, the cluster's shared headless
+	// service governs the pod's network identity, giving each pod a stable DNS
+	// name (<pod>.<headless-svc>.<ns>.svc.cluster.local). A standalone node has
+	// no governing service, so fall back to its own resource name.
+	serviceName := valkeyNodeResourceName(node)
+	if clusterName, ok := node.Labels[LabelCluster]; ok {
+		serviceName = headlessServiceName(clusterName)
+	}
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      valkeyNodeResourceName(node),
@@ -473,7 +481,7 @@ func buildValkeyNodeStatefulSet(node *valkeyiov1alpha1.ValkeyNode) (*appsv1.Stat
 		},
 		Spec: appsv1.StatefulSetSpec{
 			Replicas:    func(i int32) *int32 { return &i }(1),
-			ServiceName: valkeyNodeResourceName(node),
+			ServiceName: serviceName,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},

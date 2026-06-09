@@ -161,7 +161,7 @@ func TestBuildValkeyNodeStatefulSet(t *testing.T) {
 
 	assert.Equal(t, "valkey-mynode", ss.Name)
 	assert.Equal(t, "test-ns", ss.Namespace)
-	assert.Equal(t, "valkey-mynode", ss.Spec.ServiceName, "ServiceName should match resource name")
+	assert.Equal(t, "valkey-mynode", ss.Spec.ServiceName, "standalone node falls back to its own resource name (no governing service exists)")
 	require.NotNil(t, ss.Spec.Replicas)
 	assert.Equal(t, int32(1), *ss.Spec.Replicas)
 
@@ -176,6 +176,21 @@ func TestBuildValkeyNodeStatefulSet(t *testing.T) {
 	// Verify the template has the right container
 	require.Len(t, ss.Spec.Template.Spec.Containers, 1)
 	assert.Equal(t, "server", ss.Spec.Template.Spec.Containers[0].Name)
+}
+
+func TestBuildValkeyNodeStatefulSet_ClusterOwnedUsesSharedHeadlessService(t *testing.T) {
+	node := newTestValkeyNode("mycluster-0-1", "test-ns")
+	node.Labels = map[string]string{LabelCluster: "mycluster"}
+
+	ss, err := buildValkeyNodeStatefulSet(node)
+	require.NoError(t, err)
+
+	// A cluster-owned node must be governed by the cluster's shared headless
+	// service so each pod gets a stable DNS name
+	// (<pod>.<headless-svc>.<ns>.svc.cluster.local). Pointing it at a
+	// non-existent per-node service publishes no per-pod DNS records.
+	assert.Equal(t, headlessServiceName("mycluster"), ss.Spec.ServiceName,
+		"cluster-owned node should be governed by the shared headless service")
 }
 
 func TestBuildValkeyNodePVC(t *testing.T) {
