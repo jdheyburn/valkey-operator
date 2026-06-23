@@ -18,7 +18,6 @@ package valkey
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"slices"
 	"strconv"
@@ -39,6 +38,14 @@ type NodeState struct {
 	Info         map[string]string
 	ClusterInfo  map[string]string
 	ClusterNodes string
+}
+
+// NodeConn pairs a node's address with a borrowed client from the
+// ClientRegistry. GetClusterState consumes these instead of dialing itself.
+type NodeConn struct {
+	Address string
+	Port    int
+	Client  vclient.Client
 }
 
 // ShardState represents the current state of a shard.
@@ -80,16 +87,18 @@ func FormatSlotsRanges(ranges []SlotsRange) string {
 	return strings.Join(parts, ",")
 }
 
-// GetClusterState connects to Valkey nodes and scrapes the current state.
-func GetClusterState(ctx context.Context, addresses []string, port int, username, password string, tlsCfg *tls.Config) *ClusterState {
+// GetClusterState scrapes the current state from the supplied pre-connected
+// nodes. Callers obtain clients from the ClientRegistry and pass them in via
+// NodeConn so GetClusterState never dials itself.
+func GetClusterState(ctx context.Context, conns []NodeConn) *ClusterState {
 	state := ClusterState{
 		Shards:       make([]*ShardState, 0),
 		PendingNodes: make([]*NodeState, 0),
 	}
 
-	for _, address := range addresses {
-		// Attempt to connect to the Valkey node and extract information.
-		node := getNodeState(ctx, address, port, username, password, tlsCfg)
+	for _, conn := range conns {
+		// Attempt to scrape the node state using the borrowed client.
+		node := getNodeState(ctx, conn)
 		if node != nil {
 			// Check if node is pending to be added.
 			if node.IsPrimary() && len(node.GetSlots()) == 0 {
@@ -121,22 +130,6 @@ func GetClusterState(ctx context.Context, addresses []string, port int, username
 		}
 	}
 	return &state
-}
-
-// CloseClients disconnects all valkey-go clients.
-func (s *ClusterState) CloseClients() {
-	for _, node := range s.PendingNodes {
-		if node.Client != nil {
-			node.Client.Close()
-		}
-	}
-	for _, shard := range s.Shards {
-		for _, node := range shard.Nodes {
-			if node.Client != nil {
-				node.Client.Close()
-			}
-		}
-	}
 }
 
 // GetUnassignedSlots returns all unassigned slots
@@ -305,37 +298,20 @@ func (n *NodeState) GetFailingNodes() []NodeState {
 	return nodes
 }
 
-// Connect to a single Valkey node and scrapes its current state.
-func getNodeState(ctx context.Context, address string, port int, username string, password string, tlsConfig *tls.Config) *NodeState {
+// getNodeState scrapes the current state of a single Valkey node
+func getNodeState(ctx context.Context, conn NodeConn) *NodeState {
 	log := logf.FromContext(ctx)
 
-	opt := vclient.ClientOption{
-		InitAddress:       []string{fmt.Sprintf("%s:%d", address, port)},
-		ForceSingleClient: true, // Don't connect to another cluster node.
-		Username:          username,
-		Password:          password,
-		TLSConfig:         tlsConfig,
+	if conn.Client == nil {
+		return nil
 	}
-	client, err := vclient.NewClient(opt)
-	if err != nil {
-		if !strings.Contains(err.Error(), "WRONGPASS") {
-			log.Error(err, "failed to create Valkey client")
-			return nil
-		}
-		// fallback to unauthenticated
-		log.Info("fall back to unauthenticated default user on WRONGPASS error")
-		opt.Username = ""
-		opt.Password = ""
-		client, err = vclient.NewClient(opt)
-		if err != nil {
-			log.Error(err, "failed to create Valkey client")
-			return nil
-		}
-	}
+	client := conn.Client
 
-	node := NodeState{Client: client,
-		Address: address,
-		Port:    port}
+	node := NodeState{
+		Client:  client,
+		Address: conn.Address,
+		Port:    conn.Port,
+	}
 
 	results := client.DoMulti(ctx,
 		client.B().ClusterMyid().Build(),
@@ -345,40 +321,42 @@ func getNodeState(ctx context.Context, address string, port int, username string
 		client.B().ClusterNodes().Build(),
 	)
 
-	if len(results) == 5 {
-		id, err := results[0].ToString()
-		if err != nil {
-			log.Error(err, "command failed: CLUSTER MYID")
-		}
-		node.Id = id
-
-		shardid, err := results[1].ToString()
-		if err != nil {
-			log.Error(err, "command failed: CLUSTER MYSHARDID")
-		}
-		node.ShardId = shardid
-
-		info, err := results[2].ToString()
-		if err != nil {
-			log.Error(err, "command failed: INFO")
-		}
-		node.Info = infoStringToMap(info)
-
-		cinfo, err := results[3].ToString()
-		if err != nil {
-			log.Error(err, "command failed: CLUSTER INFO")
-		}
-		node.ClusterInfo = infoStringToMap(cinfo)
-
-		cnodes, err := results[4].ToString()
-		if err != nil {
-			log.Error(err, "command failed: CLUSTER NODES")
-		}
-		// Remove the encoding string included in a verbatim string.
-		node.ClusterNodes = strings.TrimPrefix(cnodes, "txt:")
-	} else {
-		log.Error(fmt.Errorf("expected 5 results from DoMulti, got %d", len(results)), "failed to query node state")
+	if len(results) != 5 {
+		log.Error(fmt.Errorf("expected 5 results from DoMulti, got %d", len(results)), "failed to query node state", "address", conn.Address)
+		return nil
 	}
+
+	id, err := results[0].ToString()
+	if err != nil {
+		log.Error(err, "failed to scrape node state", "address", conn.Address)
+		return nil
+	}
+	node.Id = id
+
+	shardid, err := results[1].ToString()
+	if err != nil {
+		log.Error(err, "command failed: CLUSTER MYSHARDID", "address", conn.Address)
+	}
+	node.ShardId = shardid
+
+	info, err := results[2].ToString()
+	if err != nil {
+		log.Error(err, "command failed: INFO", "address", conn.Address)
+	}
+	node.Info = infoStringToMap(info)
+
+	cinfo, err := results[3].ToString()
+	if err != nil {
+		log.Error(err, "command failed: CLUSTER INFO", "address", conn.Address)
+	}
+	node.ClusterInfo = infoStringToMap(cinfo)
+
+	cnodes, err := results[4].ToString()
+	if err != nil {
+		log.Error(err, "command failed: CLUSTER NODES", "address", conn.Address)
+	}
+	// Remove the encoding string included in a verbatim string.
+	node.ClusterNodes = strings.TrimPrefix(cnodes, "txt:")
 
 	// Extract flags
 	for line := range strings.SplitSeq(node.ClusterNodes, "\n") {

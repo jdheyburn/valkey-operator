@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"maps"
 	"reflect"
@@ -57,7 +56,8 @@ type valkeyConfigClient interface {
 
 // realValkeyConfigClient applies CONFIG SET over a real valkey-go connection.
 type realValkeyConfigClient struct {
-	client vclient.Client
+	client  vclient.Client
+	release func()
 }
 
 func (rc *realValkeyConfigClient) SetConfig(ctx context.Context, params map[string]string) error {
@@ -71,15 +71,17 @@ func (rc *realValkeyConfigClient) SetConfig(ctx context.Context, params map[stri
 	return nil
 }
 
-func (rc *realValkeyConfigClient) Close() { rc.client.Close() }
+// Close releases the borrow back to the ClientRegistry.
+func (rc *realValkeyConfigClient) Close() { rc.release() }
 
-// realConfigClient opens a real Valkey connection to the node's pod.
+// realConfigClient borrows a Valkey connection from the registry for live
+// config application. Close on the returned wrapper releases the borrow.
 func realConfigClient(ctx context.Context, r *ValkeyNodeReconciler, node *valkeyiov1alpha1.ValkeyNode) (valkeyConfigClient, error) {
-	c, err := vclient.NewClient(r.buildNodeClientOption(ctx, node))
+	c, release, err := r.Clients.GetClient(ctx, node)
 	if err != nil {
 		return nil, err
 	}
-	return &realValkeyConfigClient{client: c}, nil
+	return &realValkeyConfigClient{client: c, release: release}, nil
 }
 
 // ValkeyNodeReconciler reconciles a ValkeyNode object
@@ -88,6 +90,8 @@ type ValkeyNodeReconciler struct {
 	Scheme    *runtime.Scheme
 	Recorder  events.EventRecorder
 	APIReader client.Reader
+	// Clients is the shared registry of long-lived Valkey connections.
+	Clients *NodeClients
 	// newConfigClient opens a Valkey client to a node's pod for live config
 	// application. SetupWithManager defaults it to realConfigClient; tests
 	// override it with a fake.
@@ -541,53 +545,20 @@ func (r *ValkeyNodeReconciler) getPod(ctx context.Context, node *valkeyiov1alpha
 	return nil, nil
 }
 
-// buildNodeClientOption builds the valkey-go client option for connecting to a
-// node's pod, on a best-effort basis (TLS and operator credentials are applied
-// when available). Shared by getValkeyRole and the live-config client.
-func (r *ValkeyNodeReconciler) buildNodeClientOption(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) vclient.ClientOption {
-	var tlsConfig *tls.Config
-	if node.Spec.TLS != nil && node.Spec.TLS.Certificate.SecretName != "" {
-		secretName := node.Spec.TLS.Certificate.SecretName
-		serverName := ""
-		if clusterName, ok := node.Labels[LabelCluster]; ok {
-			serverName = fmt.Sprintf("%s.%s.svc.cluster.local", headlessServiceName(clusterName), node.Namespace)
-		}
-		if cfg, err := getTLSConfig(ctx, r.Client, secretName, serverName, node.Namespace); err == nil {
-			tlsConfig = cfg
-		}
-	}
-
-	var username, operatorPassword string
-	if clusterName, ok := node.Labels[LabelCluster]; ok {
-		operatorPassword, _ = fetchSystemUserPassword(ctx, operatorUser, r.Client, clusterName, node.Namespace)
-		if operatorPassword != "" {
-			username = operatorUser
-		}
-	}
-
-	return vclient.ClientOption{
-		InitAddress:       []string{fmt.Sprintf("%s:%d", node.Status.PodIP, DefaultPort)},
-		ForceSingleClient: true,
-		TLSConfig:         tlsConfig,
-		Username:          username,
-		Password:          operatorPassword,
-	}
-}
-
-// getValkeyRole connects to a Valkey pod and returns its replication role
-// ("primary" or "replica"). Returns an empty string if the role cannot be determined.
+// getValkeyRole borrows a client from the registry and returns the node's
+// replication role ("primary" or "replica"). Returns "" if the role cannot
+// be determined.
 func (r *ValkeyNodeReconciler) getValkeyRole(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) string {
-	c, err := vclient.NewClient(r.buildNodeClientOption(ctx, node))
+	c, release, err := r.Clients.GetClient(ctx, node)
 	if err != nil {
 		return ""
 	}
-	defer c.Close()
+	defer release()
 
 	info, err := c.Do(ctx, c.B().Info().Section("replication").Build()).ToString()
 	if err != nil {
 		return ""
 	}
-
 	return parseValkeyRole(info)
 }
 
@@ -604,6 +575,8 @@ func (r *ValkeyNodeReconciler) applyLiveConfig(ctx context.Context, node *valkey
 	if err != nil {
 		return false, err
 	}
+	// Close releases the borrow back to the ClientRegistry (or marks the fake
+	// closed in tests).
 	defer c.Close()
 
 	if err := c.SetConfig(ctx, params); err != nil {

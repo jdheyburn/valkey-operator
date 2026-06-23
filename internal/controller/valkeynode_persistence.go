@@ -61,6 +61,8 @@ func (r *ValkeyNodeReconciler) reconcilePersistenceFinalizer(ctx context.Context
 }
 
 func (r *ValkeyNodeReconciler) reconcileDeletion(ctx context.Context, node *valkeyiov1alpha1.ValkeyNode) (ctrl.Result, error) {
+	r.Clients.Evict(nodeRegistryKey(node.Namespace, node.Name))
+
 	if !controllerutil.ContainsFinalizer(node, persistentVolumeCleanupFinalizer) {
 		return ctrl.Result{}, nil
 	}

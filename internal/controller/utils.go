@@ -312,23 +312,29 @@ func valkeyNodeName(clusterName string, shardIndex int, nodeIndex int) string {
 	return fmt.Sprintf("%s-%d-%d", clusterName, shardIndex, nodeIndex)
 }
 
-// getTLSConfig returns the TLS configuration for a ValkeyCluster.
-func getTLSConfig(ctx context.Context, c client.Client, secretName, serverName, namespace string) (*tls.Config, error) {
+// nodeRegistryKey returns the ClientRegistry key for a ValkeyNode.
+// All call sites must use this helper so the format cannot drift.
+func nodeRegistryKey(namespace, name string) string {
+	return namespace + "/" + name
+}
+
+// getTLSConfig returns the TLS configuration for a ValkeyCluster and the
+// secret's ResourceVersion, which callers pass to the ClientRegistry as a
+// cheap TLS-rotation token. Both values come from the same single API call.
+func getTLSConfig(ctx context.Context, c client.Client, secretName, serverName, namespace string) (*tls.Config, string, error) {
 	secret := &corev1.Secret{}
-	err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, secret)
-	if err != nil {
-		return nil, err
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, secret); err != nil {
+		return nil, "", err
 	}
 
 	caData, caOk := secret.Data[tlsSecretKeyCA]
-
 	if !caOk {
-		return nil, fmt.Errorf("TLS secret is missing required key: ca=%v", caOk)
+		return nil, "", fmt.Errorf("TLS secret is missing required key: ca=%v", caOk)
 	}
 
 	caCertPool := x509.NewCertPool()
 	if !caCertPool.AppendCertsFromPEM(caData) {
-		return nil, fmt.Errorf("failed to parse CA certificates from secret key %q", "ca.crt")
+		return nil, "", fmt.Errorf("failed to parse CA certificates from secret key %q", "ca.crt")
 	}
 
 	tlsCfg := &tls.Config{
@@ -336,5 +342,5 @@ func getTLSConfig(ctx context.Context, c client.Client, secretName, serverName, 
 		ServerName: serverName,
 		MinVersion: tls.VersionTLS12,
 	}
-	return tlsCfg, nil
+	return tlsCfg, secret.ResourceVersion, nil
 }

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -49,6 +50,7 @@ import (
 
 	valkeyiov1alpha1 "valkey.io/valkey-operator/api/v1alpha1"
 	"valkey.io/valkey-operator/internal/controller"
+	"valkey.io/valkey-operator/internal/valkey"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -237,10 +239,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	clientRegistry := valkey.NewClientRegistry(10 * time.Minute)
+	if err := mgr.Add(clientRegistry); err != nil {
+		setupLog.Error(err, "unable to register Valkey client registry")
+		os.Exit(1)
+	}
+	nodeClients := controller.NewNodeClients(clientRegistry, mgr.GetClient())
+
 	if err := (&controller.ValkeyClusterReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorder("valkeycluster-controller"),
+		Clients:  nodeClients,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ValkeyCluster")
 		os.Exit(1)
@@ -250,6 +260,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorder("valkeynode-controller"),
+		Clients:  nodeClients,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ValkeyNode")
 		os.Exit(1)

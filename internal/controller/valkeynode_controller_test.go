@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	valkeyiov1alpha1 "valkey.io/valkey-operator/api/v1alpha1"
+	"valkey.io/valkey-operator/internal/valkey"
 	testutils "valkey.io/valkey-operator/test/utils"
 )
 
@@ -173,6 +174,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -198,6 +200,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -228,6 +231,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -267,6 +271,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -279,6 +284,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			By("first reconcile creates the StatefulSet")
@@ -312,6 +318,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -337,6 +344,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -360,6 +368,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -428,6 +437,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -472,6 +482,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			Expect(r.ensurePersistentVolumeClaim(ctx, node)).To(Succeed())
@@ -509,6 +520,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -551,6 +563,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -614,6 +627,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			By("reconciling to create the StatefulSet")
@@ -716,6 +730,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -736,6 +751,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			By("first reconcile creates the Deployment")
@@ -794,6 +810,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 
 			By("reconciling to create the Deployment")
@@ -831,6 +848,7 @@ var _ = Describe("ValkeyNode Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Recorder: events.NewFakeRecorder(100),
+				Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			}
 			node := &valkeyiov1alpha1.ValkeyNode{
 				Spec: valkeyiov1alpha1.ValkeyNodeSpec{WorkloadType: "DaemonSet"},
@@ -850,6 +868,7 @@ var _ = Describe("isWorkloadRolledOut", func() {
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
 			Recorder: events.NewFakeRecorder(100),
+			Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 			// Leave APIReader nil so the test uses the cached client (simpler for envtest)
 		}
 	}
@@ -1045,6 +1064,7 @@ var _ = Describe("ValkeyNode updateStatus", func() {
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
 			Recorder: events.NewFakeRecorder(100),
+			Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 		}
 	})
 
@@ -1105,6 +1125,7 @@ var _ = Describe("clearLiveConfigCondition", func() {
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
 			Recorder: events.NewFakeRecorder(100),
+			Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 		}
 	})
 
@@ -1159,6 +1180,7 @@ var _ = Describe("setLiveConfigCondition", func() {
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
 			Recorder: events.NewFakeRecorder(100),
+			Clients:  NewNodeClients(valkey.NewClientRegistry(10 * time.Minute), k8sClient),
 		}
 	})
 
@@ -1193,6 +1215,9 @@ func (f *fakeConfigClient) SetConfig(_ context.Context, params map[string]string
 	return f.err
 }
 
+// Close records that applyLiveConfig invoked the lifecycle hook. For the real
+// registry-backed client Close releases the borrow; here it marks the fake
+// closed so tests can assert the hook was called.
 func (f *fakeConfigClient) Close() { f.closed = true }
 
 var _ = Describe("applyLiveConfig", Label("liveconfig"), func() {

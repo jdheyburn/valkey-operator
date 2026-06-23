@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"reflect"
@@ -64,6 +63,8 @@ type ValkeyClusterReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
+	// Clients is the shared registry of long-lived Valkey connections.
+	Clients *NodeClients
 }
 
 // +kubebuilder:rbac:groups=valkey.io,resources=valkeyclusters,verbs=get;list;watch;create;update;patch;delete
@@ -178,15 +179,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return result, nil
 	}
 
-	operatorPassword, err := fetchSystemUserPassword(ctx, operatorUser, r.Client, cluster.Name, cluster.Namespace)
-	if err != nil {
-		log.Error(err, "failed to retrieve system user password")
-		setCondition(cluster, valkeyiov1alpha1.ConditionReady, valkeyiov1alpha1.ReasonSystemUsersAclError, err.Error(), metav1.ConditionFalse)
-		_ = r.updateStatus(ctx, cluster, nil)
-		return ctrl.Result{}, nil
-	}
-	state := r.getValkeyClusterState(ctx, cluster, nodes, operatorUser, operatorPassword)
-	defer state.CloseClients()
+	state := r.getValkeyClusterState(ctx, nodes)
 
 	r.forgetStaleNodes(ctx, cluster, state, nodes)
 
@@ -492,12 +485,7 @@ func (r *ValkeyClusterReconciler) reconcileValkeyNodes(ctx context.Context, clus
 	// immediately, re-scraping fresh state before any further rolls.
 	var clusterState *valkey.ClusterState
 	if anyNodeRequiresRoll(cluster, nodes, configHash) {
-		operatorPassword, err := fetchSystemUserPassword(ctx, operatorUser, r.Client, cluster.Name, cluster.Namespace)
-		if err != nil {
-			return false, fmt.Errorf("failed to fetch operator password for proactive failover: %w", err)
-		}
-		clusterState = r.getValkeyClusterState(ctx, cluster, nodes, operatorUser, operatorPassword)
-		defer clusterState.CloseClients()
+		clusterState = r.getValkeyClusterState(ctx, nodes)
 	}
 
 	for shardIndex := range int(cluster.Spec.Shards) {
@@ -670,23 +658,32 @@ func buildClusterValkeyNode(cluster *valkeyiov1alpha1.ValkeyCluster, shardIndex 
 	}
 }
 
-func (r *ValkeyClusterReconciler) getValkeyClusterState(ctx context.Context, cluster *valkeyiov1alpha1.ValkeyCluster, nodes *valkeyiov1alpha1.ValkeyNodeList, username, password string) *valkey.ClusterState {
-	ips := []string{}
-	for _, node := range nodes.Items {
+func (r *ValkeyClusterReconciler) getValkeyClusterState(ctx context.Context, nodes *valkeyiov1alpha1.ValkeyNodeList) *valkey.ClusterState {
+	log := logf.FromContext(ctx)
+
+	conns := make([]valkey.NodeConn, 0, len(nodes.Items))
+	releases := make([]func(), 0, len(nodes.Items))
+	for i := range nodes.Items {
+		node := &nodes.Items[i]
 		if node.Status.PodIP == "" {
 			continue
 		}
-		ips = append(ips, node.Status.PodIP)
-	}
-	var tlsConfig *tls.Config
-	if cluster.Spec.TLS != nil && cluster.Spec.TLS.Certificate.SecretName != "" {
-		serverName := fmt.Sprintf("%s.%s.svc.cluster.local", headlessServiceName(cluster.Name), cluster.Namespace)
-		cfg, err := getTLSConfig(ctx, r.Client, cluster.Spec.TLS.Certificate.SecretName, serverName, cluster.Namespace)
-		if err == nil {
-			tlsConfig = cfg
+		key := nodeRegistryKey(node.Namespace, node.Name)
+		c, release, err := r.Clients.GetClient(ctx, node)
+		if err != nil {
+			log.Error(err, "failed to obtain Valkey client", "node", key)
+			continue
 		}
+		conns = append(conns, valkey.NodeConn{Address: node.Status.PodIP, Port: DefaultPort, Client: c})
+		releases = append(releases, release)
 	}
-	return valkey.GetClusterState(ctx, ips, DefaultPort, username, password, tlsConfig)
+	defer func() {
+		for _, rel := range releases {
+			rel()
+		}
+	}()
+
+	return valkey.GetClusterState(ctx, conns)
 }
 
 // findMeetTarget picks the best node to MEET all isolated nodes against.
